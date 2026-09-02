@@ -115,6 +115,40 @@ def get_parser():
                         type=float,
                         help="Adam learning rate")
 
+    parser.add_argument(
+        '--convergence_tol_days',
+        default=1.0,
+        type=float,
+        help=
+        "Early-stopping tolerance, in days. Every --convergence_check_every steps "
+        "the fit's current predicted dates (root date plus every node's cumulative "
+        "branch time) are compared to the same prediction from the previous check. "
+        "If the mean absolute change is below this tolerance for "
+        "--convergence_patience checks in a row, fitting stops even if --steps has "
+        "not been reached; --steps remains a hard upper bound either way. Set to 0 "
+        "(or pass --disable_early_stopping) to always run the full --steps.")
+
+    parser.add_argument(
+        '--convergence_check_every',
+        default=50,
+        type=int,
+        help="How often, in steps, to evaluate the early-stopping criterion.")
+
+    parser.add_argument(
+        '--convergence_patience',
+        default=3,
+        type=int,
+        help=
+        "Number of consecutive checks (each --convergence_check_every steps apart) "
+        "that must be below --convergence_tol_days before stopping early.")
+
+    parser.add_argument(
+        '--disable_early_stopping',
+        action='store_true',
+        help=
+        "Always run the full --steps, ignoring the convergence criterion. Use this "
+        "if you need an exact, reproducible number of SVI steps.")
+
     parser.add_argument('--name_all_nodes',
                         action='store_true',
                         help="Should we name all nodes in the output tree?")
@@ -208,6 +242,38 @@ def get_parser():
          "uniformly better, so it is not yet the default."))
 
     return parser
+
+
+def _make_convergence_check(all_node_rows, all_node_cols, n_all_nodes):
+    """Build the two jitted functions behind the early-stopping convergence
+    check.
+
+    `node_days` computes every node's predicted date on device, via the same
+    sparse matmul the model already uses for terminal dates
+    (helpers.do_branch_matmul). `mean_abs_change` reduces two such arrays'
+    difference to a single scalar, also on device. Only that scalar needs to
+    cross to the host, so a check's host-visible cost is independent of the
+    number of nodes in the tree -- unlike pulling the whole per-branch time
+    array off device and walking the tree in Python, which costs O(nodes)
+    every check and would eventually cost more than the SVI steps it is
+    meant to save on a very large tree.
+
+    Kept as two functions, rather than one that also does the comparison,
+    because there is no previous value to compare against on a check's first
+    call.
+    """
+
+    @jax.jit
+    def node_days(branch_times, root_date):
+        return helpers.do_branch_matmul(
+            all_node_rows, all_node_cols, branch_times,
+            final_size=n_all_nodes) + root_date
+
+    @jax.jit
+    def mean_abs_change(current_node_days, previous_node_days):
+        return jnp.mean(jnp.abs(current_node_days - previous_node_days))
+
+    return node_days, mean_abs_change
 
 
 def prepend_to_file_name(full_path, to_prepend):
@@ -307,6 +373,21 @@ def main():
     cols = jnp.asarray(cols)
     print("Cols array created")
 
+    # A second sparse matrix, over every node rather than just terminals,
+    # used only for the early-stopping convergence check below: it lets every
+    # node's predicted date be computed on device with the same sparse
+    # matmul the model already uses (helpers.do_branch_matmul), so a check
+    # costs one scalar host sync rather than an O(nodes) transfer-and-walk
+    # from Python every time. `tree` is already fully labelled by
+    # get_initial_branch_lengths_and_name_all_nodes above, and its topology
+    # does not change again, so this is built once regardless of how many
+    # checks the fit ends up doing.
+    all_node_rows, all_node_cols = input_mod.get_rows_and_cols_of_full_sparse_matrix(
+        tree, name_to_pos)
+    all_node_rows = jnp.asarray(all_node_rows)
+    all_node_cols = jnp.asarray(all_node_cols)
+    n_all_nodes = len(names_init)
+
     if args.clock:
         print(f"Using clock rate {args.clock}")
         clock_rate = args.clock
@@ -402,13 +483,29 @@ def main():
         initial_root_date=initial_root_date)
 
     print("Performing SVI:")
+    num_steps = args.steps
     optimiser = optim.ClippedAdam(
         args.lr) if args.clipped_adam else optim.Adam(args.lr)
     svi = SVI(my_model.model, my_model.guide, optimiser, Trace_ELBO())
     state = svi.init(jax.random.PRNGKey(0))
 
-    num_steps = args.steps
     was_interrupted = False
+
+    # Early-stopping convergence check: has the fit's predicted output
+    # (root date plus every node's cumulative branch time) actually stopped
+    # moving? This is a better stopping signal than the loss, which can keep
+    # crawling long after the dates a user would see have settled -- see
+    # _make_convergence_check for how this is kept cheap on a huge tree.
+    check_convergence = (not args.disable_early_stopping
+                         and args.convergence_tol_days > 0)
+    convergence_check_every = max(args.convergence_check_every, 1)
+    if check_convergence:
+        convergence_node_days_fn, convergence_mean_abs_change_fn = (
+            _make_convergence_check(all_node_rows, all_node_cols,
+                                    n_all_nodes))
+    previous_node_days = None
+    consecutive_converged = 0
+    checks_done = 0
 
     # Run the fitting steps in chunks under jax.lax.scan rather than one at a
     # time from Python. The dominant cost of the old loop was not the gradient
@@ -478,6 +575,58 @@ def main():
                     "There may have been a 'gradient explosion'. This run may not be successful (you can stop it with ctrl-C). Suggested troubleshooting steps: specify a low learning rate e.g. '--lr 0.005'."
                 )
 
+            if check_convergence:
+                # Only check at chunk boundaries -- chunks are already the
+                # sync point, so this rides along rather than adding one.
+                # `step // convergence_check_every` increasing means a
+                # multiple of it has been crossed since the last chunk; using
+                # "crossed" rather than "step % check_every == 0" means this
+                # is correct even when convergence_check_every is not a
+                # multiple of the chunk size.
+                new_checks_done = step // convergence_check_every
+                if new_checks_done > checks_done:
+                    checks_done = new_checks_done
+                    current_params = svi.get_params(state)
+                    current_node_days = convergence_node_days_fn(
+                        my_model.get_branch_times(current_params),
+                        current_params['root_date_mu'])
+                    if previous_node_days is not None:
+                        # The only place a convergence check touches the
+                        # host: one scalar, regardless of tree size, because
+                        # the per-node dates and their comparison both ran
+                        # on device inside the jitted functions above.
+                        mean_abs_change_days = float(
+                            convergence_mean_abs_change_fn(
+                                current_node_days, previous_node_days))
+                        if mean_abs_change_days < args.convergence_tol_days:
+                            consecutive_converged += 1
+                        else:
+                            consecutive_converged = 0
+                        if consecutive_converged >= args.convergence_patience:
+                            print(
+                                f"Converged: mean absolute change in "
+                                f"predicted node dates was "
+                                f"{mean_abs_change_days:.4f} days (< "
+                                f"--convergence_tol_days "
+                                f"{args.convergence_tol_days}) for "
+                                f"{consecutive_converged} consecutive checks "
+                                f"~{convergence_check_every} steps apart. "
+                                f"Stopping early at step {step} "
+                                f"(of {num_steps} requested).")
+                            loss = losses[-1]
+                            results = my_model.get_logging_results(
+                                current_params)
+                            results['step'] = step
+                            results['loss'] = loss
+                            results.move_to_end('loss', last=False)
+                            results.move_to_end('step', last=False)
+                            print("\t".join([
+                                f"{name}:{value:.4f}"
+                                if "." in str(value) else f"{name}:{value}"
+                                for name, value in results.items()
+                            ]))
+                            break
+                    previous_node_days = current_node_days
             if step % 10 == 0 or step == num_steps - 1:
                 loss = losses[-1]
                 results = my_model.get_logging_results(svi.get_params(state))

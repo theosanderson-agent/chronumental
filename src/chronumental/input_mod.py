@@ -374,3 +374,43 @@ def estimate_initial_times(tree, name_to_pos, branch_distances_array,
 
     root_date_init = adjusted[root_label]
     return branch_time_init, root_date_init
+
+def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos):
+    """Like get_rows_and_cols_of_sparse_matrix, but rows range over every
+    node (internal nodes included), not just the terminals.
+
+    Used only for the early-stopping convergence check: with this, every
+    node's predicted date can be computed on device with the same sparse
+    matmul the model already uses for terminals (helpers.do_branch_matmul),
+    so a convergence check costs one small host sync (a single scalar)
+    rather than transferring the whole branch-length array and walking the
+    tree from Python. `tree` must already have every node labelled, e.g. by
+    get_initial_branch_lengths_and_name_all_nodes.
+    """
+    count = 0
+    for node in alive_it(
+            helpers.preorder_traversal(tree.root),
+            title="Counting tree for full (all-node) sparse matrix creation"):
+        cur_node = node
+        count += 1
+        while cur_node.parent is not None:
+            count += 1
+            cur_node = cur_node.parent
+
+    rows = np.zeros(count, dtype=int)
+    cols = np.zeros(count, dtype=int)
+
+    location = 0
+    for node in alive_it(
+            helpers.preorder_traversal(tree.root),
+            title="Populating full (all-node) sparse matrix rows, cols"):
+        cur_node = node
+        rows[location] = name_to_pos[node.label]
+        cols[location] = name_to_pos[cur_node.label]
+        location += 1
+        while cur_node.parent is not None:
+            rows[location] = name_to_pos[node.label]
+            cols[location] = name_to_pos[cur_node.parent.label]
+            location += 1
+            cur_node = cur_node.parent
+    return rows, cols
