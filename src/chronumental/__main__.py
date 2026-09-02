@@ -308,11 +308,36 @@ def main():
         print(
             "No clock rate specified, performing root-to-tip regression to estimate starting value"
         )
-        # Do basic regression of root to tip vs target dates with numpy:
-        x = terminal_target_dates_array
-        y = root_to_tip
-        slope_per_day, intercept, r_value, p_value, std_err = stats.linregress(
-            x, y)
+        # Root-to-tip regression to get a starting value for the clock rate.
+        # This seeds the prior (Uniform(0, clock_rate * 1000)) and every
+        # initial value in the guide, so a bad estimate here poisons the
+        # whole fit. Ordinary least squares is not robust: under a relaxed
+        # (non-strict) clock, root-to-tip divergence is noisy, and a
+        # handful of tips with extreme dates or divergences get high
+        # leverage and can drag the unweighted OLS slope far from the
+        # truth. Theil-Sen (the median of all pairwise slopes) has a 29%
+        # breakdown point and is far less sensitive to such outliers,
+        # while agreeing closely with OLS when the strict-clock
+        # assumption actually holds.
+        x = np.asarray(terminal_target_dates_array)
+        y = np.asarray(root_to_tip)
+        # Theil-Sen is O(n^2) in the number of tips (it forms every
+        # pairwise slope), which is fine for hundreds or a few thousand
+        # tips but can exhaust memory on the much larger real-world trees
+        # chronumental is sometimes run on. Cap the number of points fed
+        # to it by subsampling; a few thousand tips is already far more
+        # than needed to estimate one slope robustly.
+        max_points_for_theilsen = 5000
+        if x.shape[0] > max_points_for_theilsen:
+            rng = np.random.default_rng(0)
+            idx = rng.choice(x.shape[0],
+                             size=max_points_for_theilsen,
+                             replace=False)
+            x_fit, y_fit = x[idx], y[idx]
+        else:
+            x_fit, y_fit = x, y
+        slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
+            y_fit, x_fit)
         slope_per_year = slope_per_day * 365
 
         print(f"Root to tip regression: got rate of: {slope_per_year}")
