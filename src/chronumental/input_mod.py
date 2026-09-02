@@ -19,9 +19,22 @@ def read_tabular_file(tabular_file_name, **kwargs):
     stripped_name = tabular_file_name.replace(".gz", "").replace(
         ".bz2", "").replace(".xz", "").replace(".lzma", "")
     if stripped_name.endswith(".csv"):
-        return pd.read_csv(tabular_file, dtype={"strain": str, "name": str, "taxon": str}, **kwargs)
+        return pd.read_csv(tabular_file,
+                           dtype={
+                               "strain": str,
+                               "name": str,
+                               "taxon": str
+                           },
+                           **kwargs)
     if stripped_name.endswith(".tsv"):
-        return pd.read_csv(tabular_file, sep="\t", dtype={"strain": str, "name": str, "taxon": str},**kwargs)
+        return pd.read_csv(tabular_file,
+                           sep="\t",
+                           dtype={
+                               "strain": str,
+                               "name": str,
+                               "taxon": str
+                           },
+                           **kwargs)
     raise Exception(
         f"Tabular file {tabular_file_name} was expected to end in tsv or csv")
 
@@ -42,8 +55,9 @@ def fromYearFraction(yearFraction):
     if np.isnan(yearFraction):
         raise ValueError("Is NaN")
     year = int(yearFraction)
-    if year==0:
-        raise ValueError("The year zero does not exist in the Gregorian calendar")
+    if year == 0:
+        raise ValueError(
+            "The year zero does not exist in the Gregorian calendar")
     fraction = yearFraction - year
     startOfThisYear = dt(year=year, month=1, day=1)
     startOfNextYear = dt(year=year + 1, month=1, day=1)

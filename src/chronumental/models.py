@@ -58,8 +58,6 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
             'variance_on_clock_rate']
         self.expected_min_between_transmissions = kwargs[
             'model_configuration']['expected_min_between_transmissions']
-        
-        
 
         super().__init__(**kwargs)
 
@@ -98,9 +96,7 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         else:
             mutation_rate = numpyro.sample(
                 f"latent_mutation_rate",
-                dist.Uniform(
-                    low=0.0,
-                    high=self.clock_rate * 1000.0))
+                dist.Uniform(low=0.0, high=self.clock_rate * 1000.0))
 
         branch_distances = numpyro.sample("branch_distances",
                                           dist.Poisson(mutation_rate *
@@ -142,7 +138,9 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         else:
             mutation_rate = numpyro.sample(
                 f"latent_mutation_rate",
-                dist.TruncatedNormal(0, mutation_rate_mu, mutation_rate_sigma))
+                dist.TruncatedNormal(mutation_rate_mu,
+                                     mutation_rate_sigma,
+                                     low=0.0))
 
     def get_branch_times(self, params):
         return params['time_length_mu']
@@ -151,6 +149,7 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         if self.enforce_exact_clock:
             return self.clock_rate
         return params['mutation_rate_mu']
+
 
 class HorseShoeLike(ChronumentalModelBase):
 
@@ -165,7 +164,7 @@ class HorseShoeLike(ChronumentalModelBase):
             'variance_on_clock_rate']
         self.expected_min_between_transmissions = kwargs[
             'model_configuration']['expected_min_between_transmissions']
-        
+
         self.initial_tau = kwargs['model_configuration']['initial_tau']
         self.fixed_tau = kwargs['model_configuration']['fixed_tau']
         self.hs_scale = kwargs['model_configuration']['hs_scale']
@@ -175,8 +174,10 @@ class HorseShoeLike(ChronumentalModelBase):
     def get_logging_results(self, params):
         results = super().get_logging_results(params)
         results['mutation_rate'] = self.get_mutation_rate(params)
-        results['argmax_variances_param'] = self.terminal_names[onp.argmax(params['variances_param'])]
-        results['median_variances_param'] = onp.median(params['variances_param'])
+        results['argmax_variances_param'] = self.terminal_names[onp.argmax(
+            params['variances_param'])]
+        results['median_variances_param'] = onp.median(
+            params['variances_param'])
         results['max_variances_param'] = onp.max(params['variances_param'])
         results['tau'] = params['tau_param']
         return results
@@ -211,9 +212,7 @@ class HorseShoeLike(ChronumentalModelBase):
         else:
             mutation_rate = numpyro.sample(
                 f"latent_mutation_rate",
-                dist.Uniform(
-                    low=0.0,
-                    high=self.clock_rate * 1000.0))
+                dist.Uniform(low=0.0, high=self.clock_rate * 1000.0))
 
         branch_distances = numpyro.sample("branch_distances",
                                           dist.Poisson(mutation_rate *
@@ -224,17 +223,16 @@ class HorseShoeLike(ChronumentalModelBase):
 
         hs_scale = self.hs_scale
 
-        tau = numpyro.sample("tau",
-                                   dist.HalfCauchy(hs_scale))
+        tau = numpyro.sample("tau", dist.HalfCauchy(hs_scale))
 
-        lambda_l = numpyro.sample("lambda",
-                                   dist.HalfCauchy(hs_scale),
-                                      sample_shape=self.terminal_target_dates_array.shape)
-     
+        lambda_l = numpyro.sample(
+            "lambda",
+            dist.HalfCauchy(hs_scale),
+            sample_shape=self.terminal_target_dates_array.shape)
 
         final_dates = numpyro.sample(f"final_dates",
-                                     dist.Normal(
-                                         calced_dates, lambda_l**2 * tau**2),
+                                     dist.Normal(calced_dates,
+                                                 lambda_l**2 * tau**2),
                                      obs=self.terminal_target_dates_array)
 
     def guide(self):
@@ -254,20 +252,20 @@ class HorseShoeLike(ChronumentalModelBase):
             "mutation_rate_sigma",
             self.clock_rate,
             constraint=dist.constraints.positive)
-        
-        variances = numpyro.param("variances_param",
-                                    onp.ones(self.terminal_target_dates_array.shape) *0.2,
-                                    constraint=dist.constraints.positive)
-        
+
+        variances = numpyro.param(
+            "variances_param",
+            onp.ones(self.terminal_target_dates_array.shape) * 0.2,
+            constraint=dist.constraints.positive)
+
         tau_param = numpyro.param("tau_param",
-                                    self.initial_tau,
-                                    constraint=dist.constraints.positive)
-        tau = numpyro.sample("tau",
-                                      dist.Delta(tau_param if not self.fixed_tau else self.initial_tau))
-        
-        sample_variances = numpyro.sample("lambda",
-                                    dist.Delta(variances))
-        
+                                  self.initial_tau,
+                                  constraint=dist.constraints.positive)
+        tau = numpyro.sample(
+            "tau",
+            dist.Delta(tau_param if not self.fixed_tau else self.initial_tau))
+
+        sample_variances = numpyro.sample("lambda", dist.Delta(variances))
 
         branch_times = numpyro.sample("latent_time_length",
                                       dist.Delta(time_length_mu))
@@ -278,7 +276,9 @@ class HorseShoeLike(ChronumentalModelBase):
         else:
             mutation_rate = numpyro.sample(
                 f"latent_mutation_rate",
-                dist.TruncatedNormal(0, mutation_rate_mu, mutation_rate_sigma))
+                dist.TruncatedNormal(mutation_rate_mu,
+                                     mutation_rate_sigma,
+                                     low=0.0))
 
     def get_branch_times(self, params):
         return params['time_length_mu']
@@ -287,4 +287,9 @@ class HorseShoeLike(ChronumentalModelBase):
         if self.enforce_exact_clock:
             return self.clock_rate
         return params['mutation_rate_mu']
-models = {"DeltaGuideWithStrictLearntClock": DeltaGuideWithStrictLearntClock, "HorseShoeLike": HorseShoeLike}
+
+
+models = {
+    "DeltaGuideWithStrictLearntClock": DeltaGuideWithStrictLearntClock,
+    "HorseShoeLike": HorseShoeLike
+}

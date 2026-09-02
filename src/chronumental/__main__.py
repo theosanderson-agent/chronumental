@@ -28,9 +28,7 @@ except ImportError:
 
 print(f"Chronumental {version}")
 
-from jax.lib import xla_bridge
-
-platform = xla_bridge.get_backend().platform
+platform = jax.default_backend()
 print(f"Platform: {platform}")
 
 if GPU_REQUESTED and platform == "cpu":
@@ -94,21 +92,23 @@ def get_parser():
         '--initial_tau',
         default=3.2,
         type=float,
-        help="Initial value for the tau parameter in the model. Only applies to Horseshoe.")
-    
+        help=
+        "Initial value for the tau parameter in the model. Only applies to Horseshoe."
+    )
+
     parser.add_argument(
         '--hs_scale',
         default=86917549.587,
         type=float,
         help="hs scale parameter in the model. Only applies to Horseshoe.")
-    
 
-    
-
-    parser.add_argument('--steps',
-                        default=20000,
-                        type=int,
-                        help="Number of steps to use for the SVI. Increasing this number will make runtime increase, but yield more accurate results.")
+    parser.add_argument(
+        '--steps',
+        default=20000,
+        type=int,
+        help=
+        "Number of steps to use for the SVI. Increasing this number will make runtime increase, but yield more accurate results."
+    )
 
     parser.add_argument('--lr',
                         default=0.03,
@@ -318,8 +318,9 @@ def main():
         print(f"Root to tip regression: got rate of: {slope_per_year}")
         clock_rate = slope_per_year
         if clock_rate < 0:
-            raise ValueError("ERROR: Root-to-tip regression predicted a negative mutation rate. If your dataset is correct you will need to manually specify an initial clock rate with --clock.")
-     
+            raise ValueError(
+                "ERROR: Root-to-tip regression predicted a negative mutation rate. If your dataset is correct you will need to manually specify an initial clock rate with --clock."
+            )
 
     if clock_rate < 1 and not args.treat_mutation_units_as_normalised_to_genome_size:
         raise ValueError(
@@ -364,7 +365,9 @@ def main():
 
             state, loss = svi.update(state)
             if np.isnan(loss):
-                print("There may have been a 'gradient explosion'. This run may not be successful (you can stop it with ctrl-C). Suggested troubleshooting steps: specify a low learning rate e.g. '--lr 0.005'.")
+                print(
+                    "There may have been a 'gradient explosion'. This run may not be successful (you can stop it with ctrl-C). Suggested troubleshooting steps: specify a low learning rate e.g. '--lr 0.005'."
+                )
 
             if loss < lowest_loss:
                 best_params = svi.get_params(state)
@@ -390,7 +393,11 @@ def main():
             break
     print("Fit completed. Extracting parameters.")
 
-    if not args.always_use_final_params:
+    # best_params is None only if every step produced a NaN loss, in which
+    # case there is no "best" set of parameters to fall back to.
+    if args.always_use_final_params or best_params is None:
+        params = svi.get_params(state)
+    else:
         params = best_params
     to_save = ""
     if was_interrupted:
@@ -403,7 +410,7 @@ def main():
 
         branch_length_lookup = dict(
             zip(names_init,
-                my_model.get_branch_times(svi.get_params(state)).tolist()))
+                my_model.get_branch_times(params).tolist()))
 
         total_lengths_in_time = {}
 
@@ -436,7 +443,8 @@ def main():
 
         origin_date = lookup[reference_point][0]
         output_dates = {
-            name: origin_date +
+            name:
+            origin_date +
             datetime.timedelta(days=(x + params['root_date_mu'].tolist()))
             for name, x in total_lengths_in_time.items()
         }
