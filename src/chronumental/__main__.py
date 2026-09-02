@@ -91,17 +91,29 @@ def get_parser():
 
     parser.add_argument(
         '--initial_tau',
-        default=3.2,
+        default=50.0,
         type=float,
         help=
-        "Initial value for the tau parameter in the model. Only applies to Horseshoe."
+        "Fixed global horseshoe scale in days: the typical size, in days, of "
+        "the extra date error a tip's declared precision doesn't account "
+        "for. tau is a numpyro.param but the guide always substitutes this "
+        "value rather than learning it -- a point estimate of a HalfCauchy "
+        "scale, whose density is highest at zero, is unstable under a "
+        "point-mass guide. Only applies to --model HorseShoeLike."
     )
 
     parser.add_argument(
         '--hs_scale',
-        default=86917549.587,
+        default=0.3,
         type=float,
-        help="hs scale parameter in the model. Only applies to Horseshoe.")
+        help=
+        "HalfCauchy scale for the per-tip horseshoe local shrinkage "
+        "parameter (lambda). This is what actually gives the horseshoe its "
+        "shrinkage: it must be small enough to pull most tips' extra "
+        "variance to ~0, leaving only genuinely unexplained tips inflated. "
+        "The previous default (86917549.587) was so large the prior was "
+        "essentially flat, providing no shrinkage at all. Only applies to "
+        "--model HorseShoeLike.")
 
     parser.add_argument(
         '--steps',

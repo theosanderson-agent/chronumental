@@ -254,9 +254,32 @@ class HorseShoeLike(ChronumentalModelBase):
             dist.HalfCauchy(hs_scale),
             sample_shape=self.terminal_target_dates_array.shape)
 
+        # A horseshoe scale is the *product* tau * lambda_l, not the product
+        # of their squares: dist.Normal's second argument is a standard
+        # deviation, so squaring both factors before multiplying them
+        # silently works in units of variance^2, which is not what any
+        # horseshoe construction intends and is wildly miscalibrated (a
+        # lambda_l/tau of, say, 2 turns into an implied std of 16, not 2).
+        #
+        # The known date-precision category (terminal_target_errors_array:
+        # 1 for a full date, 30 for a month, 365 for a year-only date) is
+        # exactly the same information the default model uses, via
+        # `variance_dates * terminal_target_errors_array`. Discarding it, as
+        # the old horseshoe likelihood did, throws away a strong, free
+        # signal about which tips to distrust and replaces it with one the
+        # model has to rediscover from scratch. Instead treat it as a floor:
+        # the horseshoe term rides on top of it in quadrature, so a tip
+        # whose residual is already explained by its declared precision
+        # keeps the default model's tolerance for it (lambda_l shrinks
+        # toward zero under the HalfCauchy prior), and only a tip whose
+        # error is bigger than its category would suggest pushes lambda_l
+        # up to explain the extra residual.
+        baseline_scale = self.variance_dates * self.terminal_target_errors_array
+        extra_scale = tau * lambda_l
+        scale = jnp.sqrt(baseline_scale**2 + extra_scale**2)
+
         final_dates = numpyro.sample(f"final_dates",
-                                     dist.Normal(calced_dates,
-                                                 lambda_l**2 * tau**2),
+                                     dist.Normal(calced_dates, scale),
                                      obs=self.terminal_target_dates_array)
 
     def guide(self):
@@ -277,9 +300,15 @@ class HorseShoeLike(ChronumentalModelBase):
             self.clock_rate,
             constraint=dist.constraints.positive)
 
+        # Start lambda_l near zero, not 0.2: the likelihood now adds the
+        # horseshoe term to the known-precision baseline in quadrature, so
+        # starting near zero means fitting begins at (approximately) the
+        # default model's behaviour and only grows a tip's extra tolerance
+        # if the data actually push for it, rather than starting the fit
+        # already distrusting every tip by an arbitrary fixed amount.
         variances = numpyro.param(
             "variances_param",
-            onp.ones(self.terminal_target_dates_array.shape) * 0.2,
+            onp.ones(self.terminal_target_dates_array.shape) * 1e-3,
             constraint=dist.constraints.positive)
 
         tau_param = numpyro.param("tau_param",
