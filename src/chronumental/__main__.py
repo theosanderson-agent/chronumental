@@ -149,17 +149,6 @@ def get_parser():
         "that must be below --convergence_tol_days before stopping early.")
 
     parser.add_argument(
-        '--convergence_check_nodes',
-        default=20000,
-        type=int,
-        help=
-        "How many nodes the early-stopping convergence check samples. The "
-        "check only needs the mean change in predicted dates, and a few "
-        "thousand nodes estimate that far more precisely than the stopping "
-        "tolerance requires, so sampling keeps its memory cost flat on very "
-        "large trees. Set to 0 to use every node.")
-
-    parser.add_argument(
         '--disable_early_stopping',
         action='store_true',
         help=

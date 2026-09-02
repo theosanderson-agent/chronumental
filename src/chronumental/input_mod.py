@@ -1,12 +1,9 @@
-from os import name
 import pandas as pd
 import numpy as np
-import gzip
 import datetime
 from alive_progress import alive_it
 import treeswift
 import xopen
-import lzma
 from . import helpers
 from datetime import datetime as dt
 
@@ -243,39 +240,6 @@ def get_initial_branch_lengths_and_name_all_nodes(tree):
     return initial_branch_lengths
 
 
-def get_rows_and_cols_of_sparse_matrix(tree, terminal_name_to_pos,
-                                       name_to_pos):
-    # Here we define row col coordinates for 1s in a sparse matrix of mostly 0s
-    count = 0
-
-    for leaf in alive_it(tree.traverse_leaves(),
-                         title="Counting tree for sparse matrix creation"):
-        if leaf.label in terminal_name_to_pos:
-            cur_node = leaf
-            count += 1
-            while cur_node.parent is not None:
-                count += 1
-                cur_node = cur_node.parent
-
-    rows = np.zeros(count, dtype=int)
-    cols = np.zeros(count, dtype=int)
-
-    location = 0
-    for leaf in alive_it(tree.traverse_leaves(),
-                         title="Populating sparse matrix rows, cols"):
-        if leaf.label in terminal_name_to_pos:
-            cur_node = leaf
-            rows[location] = terminal_name_to_pos[leaf.label]
-            cols[location] = name_to_pos[cur_node.label]
-            location += 1
-            while cur_node.parent is not None:
-                rows[location] = terminal_name_to_pos[leaf.label]
-                cols[location] = name_to_pos[cur_node.parent.label]
-                location += 1
-                cur_node = cur_node.parent
-    return rows, cols
-
-
 def estimate_initial_times(tree, name_to_pos, branch_distances_array,
                            target_dates, clock_rate, floor_days=0.01):
     """Estimate a per-branch initial time and an initial root date from the
@@ -390,65 +354,6 @@ def estimate_initial_times(tree, name_to_pos, branch_distances_array,
 
     root_date_init = adjusted[root_label]
     return branch_time_init, root_date_init
-
-
-def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos,
-                                           max_nodes=None, seed=0):
-    """Like get_rows_and_cols_of_sparse_matrix, but rows range over nodes
-    generally (internal nodes included), not just the terminals.
-
-    `max_nodes` caps how many nodes are included, sampling a fixed random
-    subset when the tree is bigger. The convergence check only needs the
-    *mean* absolute change in predicted dates, and the mean over a few
-    thousand randomly chosen nodes estimates that to well under the
-    tolerance it is compared against. Building rows for every node instead
-    costs memory proportional to the total path length over the whole tree,
-    which on a 100k-tip tree measured at about a gigabyte -- a real cost on
-    the very large trees this tool is for. The subset is drawn with a fixed
-    seed so a run stays reproducible.
-
-    Used only for the early-stopping convergence check: with this, every
-    node's predicted date can be computed on device with the same sparse
-    matmul the model already uses for terminals (helpers.do_branch_matmul),
-    so a convergence check costs one small host sync (a single scalar)
-    rather than transferring the whole branch-length array and walking the
-    tree from Python. `tree` must already have every node labelled, e.g. by
-    get_initial_branch_lengths_and_name_all_nodes.
-    """
-    nodes = list(helpers.preorder_traversal(tree.root))
-    if max_nodes is not None and len(nodes) > max_nodes:
-        rng = np.random.default_rng(seed)
-        chosen = rng.choice(len(nodes), size=max_nodes, replace=False)
-        chosen.sort()
-        nodes = [nodes[i] for i in chosen]
-
-    count = 0
-    for node in alive_it(
-            nodes, title="Counting tree for convergence-check matrix"):
-        cur_node = node
-        count += 1
-        while cur_node.parent is not None:
-            count += 1
-            cur_node = cur_node.parent
-
-    rows = np.zeros(count, dtype=int)
-    cols = np.zeros(count, dtype=int)
-
-    location = 0
-    for row, node in enumerate(
-            alive_it(nodes, title="Populating convergence-check matrix")):
-        # Rows are indices into the selected subset, not into the full node
-        # ordering, so the matmul's output has one entry per selected node.
-        cur_node = node
-        rows[location] = row
-        cols[location] = name_to_pos[cur_node.label]
-        location += 1
-        while cur_node.parent is not None:
-            rows[location] = row
-            cols[location] = name_to_pos[cur_node.parent.label]
-            location += 1
-            cur_node = cur_node.parent
-    return rows, cols, len(nodes)
 
 
 def get_parent_indices(tree, name_to_pos):
