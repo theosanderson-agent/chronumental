@@ -107,7 +107,12 @@ def get_parser():
         default=20000,
         type=int,
         help=
-        "Number of steps to use for the SVI. Increasing this number will make runtime increase, but yield more accurate results."
+        "Upper bound on the number of SVI steps. By default this is a ceiling, "
+        "not a target: fitting stops earlier once the predicted dates stop "
+        "changing by more than --convergence_tol_days, since extra steps beyond "
+        "that point change the answer only in ways too small to matter. Pass "
+        "--disable_early_stopping to always run exactly this many steps, e.g. "
+        "for a reproducible step count."
     )
 
     parser.add_argument('--lr',
@@ -303,6 +308,13 @@ def main():
             "If you want to enforce the exact clock rate, you must specify it with --clock"
         )
 
+    # Whether the early-stopping convergence check will run at all, decided
+    # up front because it also gates building the extra sparse matrix the
+    # check needs (see below) -- no point paying for that on a run that will
+    # never use it.
+    check_convergence = (not args.disable_early_stopping
+                         and args.convergence_tol_days > 0)
+
     if args.dates_out is None:
         args.dates_out = prepend_to_file_name(args.dates,
                                               "chronumental_dates") + ".tsv"
@@ -381,12 +393,14 @@ def main():
     # from Python every time. `tree` is already fully labelled by
     # get_initial_branch_lengths_and_name_all_nodes above, and its topology
     # does not change again, so this is built once regardless of how many
-    # checks the fit ends up doing.
-    all_node_rows, all_node_cols = input_mod.get_rows_and_cols_of_full_sparse_matrix(
-        tree, name_to_pos)
-    all_node_rows = jnp.asarray(all_node_rows)
-    all_node_cols = jnp.asarray(all_node_cols)
-    n_all_nodes = len(names_init)
+    # checks the fit ends up doing -- and not at all if the check is off, so
+    # --disable_early_stopping does not pay for it.
+    if check_convergence:
+        all_node_rows, all_node_cols = input_mod.get_rows_and_cols_of_full_sparse_matrix(
+            tree, name_to_pos)
+        all_node_rows = jnp.asarray(all_node_rows)
+        all_node_cols = jnp.asarray(all_node_cols)
+        n_all_nodes = len(names_init)
 
     if args.clock:
         print(f"Using clock rate {args.clock}")
@@ -496,8 +510,8 @@ def main():
     # moving? This is a better stopping signal than the loss, which can keep
     # crawling long after the dates a user would see have settled -- see
     # _make_convergence_check for how this is kept cheap on a huge tree.
-    check_convergence = (not args.disable_early_stopping
-                         and args.convergence_tol_days > 0)
+    # (check_convergence itself was decided earlier, before it was needed to
+    # decide whether to build the sparse matrix below.)
     convergence_check_every = max(args.convergence_check_every, 1)
     if check_convergence:
         convergence_node_days_fn, convergence_mean_abs_change_fn = (

@@ -375,6 +375,7 @@ def estimate_initial_times(tree, name_to_pos, branch_distances_array,
     root_date_init = adjusted[root_label]
     return branch_time_init, root_date_init
 
+
 def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos):
     """Like get_rows_and_cols_of_sparse_matrix, but rows range over every
     node (internal nodes included), not just the terminals.
