@@ -148,6 +148,17 @@ def get_parser():
         "that must be below --convergence_tol_days before stopping early.")
 
     parser.add_argument(
+        '--convergence_check_nodes',
+        default=20000,
+        type=int,
+        help=
+        "How many nodes the early-stopping convergence check samples. The "
+        "check only needs the mean change in predicted dates, and a few "
+        "thousand nodes estimate that far more precisely than the stopping "
+        "tolerance requires, so sampling keeps its memory cost flat on very "
+        "large trees. Set to 0 to use every node.")
+
+    parser.add_argument(
         '--disable_early_stopping',
         action='store_true',
         help=
@@ -396,11 +407,12 @@ def main():
     # checks the fit ends up doing -- and not at all if the check is off, so
     # --disable_early_stopping does not pay for it.
     if check_convergence:
-        all_node_rows, all_node_cols = input_mod.get_rows_and_cols_of_full_sparse_matrix(
-            tree, name_to_pos)
+        all_node_rows, all_node_cols, n_all_nodes = (
+            input_mod.get_rows_and_cols_of_full_sparse_matrix(
+                tree, name_to_pos,
+                max_nodes=args.convergence_check_nodes or None))
         all_node_rows = jnp.asarray(all_node_rows)
         all_node_cols = jnp.asarray(all_node_cols)
-        n_all_nodes = len(names_init)
 
     if args.clock:
         print(f"Using clock rate {args.clock}")

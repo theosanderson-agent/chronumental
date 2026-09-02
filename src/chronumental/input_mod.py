@@ -376,9 +376,20 @@ def estimate_initial_times(tree, name_to_pos, branch_distances_array,
     return branch_time_init, root_date_init
 
 
-def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos):
-    """Like get_rows_and_cols_of_sparse_matrix, but rows range over every
-    node (internal nodes included), not just the terminals.
+def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos,
+                                           max_nodes=None, seed=0):
+    """Like get_rows_and_cols_of_sparse_matrix, but rows range over nodes
+    generally (internal nodes included), not just the terminals.
+
+    `max_nodes` caps how many nodes are included, sampling a fixed random
+    subset when the tree is bigger. The convergence check only needs the
+    *mean* absolute change in predicted dates, and the mean over a few
+    thousand randomly chosen nodes estimates that to well under the
+    tolerance it is compared against. Building rows for every node instead
+    costs memory proportional to the total path length over the whole tree,
+    which on a 100k-tip tree measured at about a gigabyte -- a real cost on
+    the very large trees this tool is for. The subset is drawn with a fixed
+    seed so a run stays reproducible.
 
     Used only for the early-stopping convergence check: with this, every
     node's predicted date can be computed on device with the same sparse
@@ -388,10 +399,16 @@ def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos):
     tree from Python. `tree` must already have every node labelled, e.g. by
     get_initial_branch_lengths_and_name_all_nodes.
     """
+    nodes = list(helpers.preorder_traversal(tree.root))
+    if max_nodes is not None and len(nodes) > max_nodes:
+        rng = np.random.default_rng(seed)
+        chosen = rng.choice(len(nodes), size=max_nodes, replace=False)
+        chosen.sort()
+        nodes = [nodes[i] for i in chosen]
+
     count = 0
     for node in alive_it(
-            helpers.preorder_traversal(tree.root),
-            title="Counting tree for full (all-node) sparse matrix creation"):
+            nodes, title="Counting tree for convergence-check matrix"):
         cur_node = node
         count += 1
         while cur_node.parent is not None:
@@ -402,16 +419,17 @@ def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos):
     cols = np.zeros(count, dtype=int)
 
     location = 0
-    for node in alive_it(
-            helpers.preorder_traversal(tree.root),
-            title="Populating full (all-node) sparse matrix rows, cols"):
+    for row, node in enumerate(
+            alive_it(nodes, title="Populating convergence-check matrix")):
+        # Rows are indices into the selected subset, not into the full node
+        # ordering, so the matmul's output has one entry per selected node.
         cur_node = node
-        rows[location] = name_to_pos[node.label]
+        rows[location] = row
         cols[location] = name_to_pos[cur_node.label]
         location += 1
         while cur_node.parent is not None:
-            rows[location] = name_to_pos[node.label]
+            rows[location] = row
             cols[location] = name_to_pos[cur_node.parent.label]
             location += 1
             cur_node = cur_node.parent
-    return rows, cols
+    return rows, cols, len(nodes)
