@@ -384,8 +384,8 @@ def main():
 
     terminal_name_to_pos = {x: i for i, x in enumerate(terminal_names)}
 
-    initial_branch_lengths = input_mod.get_initial_branch_lengths_and_name_all_nodes(
-        tree)
+    initial_branch_lengths, invented_labels = (
+        input_mod.get_initial_branch_lengths_and_name_all_nodes(tree))
     names_init = sorted(initial_branch_lengths.keys())
     branch_distances_array = jnp.array(
         [initial_branch_lengths[x] for x in names_init])
@@ -677,7 +677,16 @@ def main():
     else:
         to_save = "y"
     if to_save.strip().lower() == "y":
-        tree2 = input_mod.read_tree(args.tree)
+        # Reuse the tree already parsed rather than reading the file again.
+        # Setup labelled every node; the ones it invented are dropped again
+        # here unless --name_all_nodes asked for them, so the output tree is
+        # the same either way. Parsing twice cost about three seconds and a
+        # second copy of the tree at 300k tips, and more above that.
+        tree2 = tree
+        if not args.name_all_nodes:
+            for node in helpers.preorder_traversal(tree2.root):
+                if node.label in invented_labels:
+                    node.label = None
 
         branch_length_lookup = dict(
             zip(names_init,
