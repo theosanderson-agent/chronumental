@@ -707,11 +707,17 @@ def main():
             node.edge_length = branch_length_lookup[node_name] / (
                 365 if args.output_unit == "years" else 1)
             if not node.parent:
+                # Written as zero for the same reason its cumulative time is
+                # zero: nothing above the root, so nothing for a branch to
+                # span. Leaving the fitted value here would make the output
+                # tree and the output dates disagree, since walking the tree
+                # from the root would accumulate a duration the dates omit.
                 # The root spans no time: it has no parent for time to elapse
                 # from. The fitted model agrees -- helpers.make_path_sum zeroes
                 # the root's entry, so its branch time never enters any
                 # root-to-tip sum the likelihood sees. Adding it here would
                 # shift every node's date by a quantity the fit never used.
+                node.edge_length = 0.0
                 total_lengths[node] = 0.0
             else:
                 total_lengths[node] = branch_length_lookup[
