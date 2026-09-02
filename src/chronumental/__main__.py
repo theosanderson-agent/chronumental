@@ -194,6 +194,19 @@ def get_parser():
         "Will force the model to always use the final parameters, rather than simply using those that gave the lowest loss"
     )
 
+    parser.add_argument(
+        '--tip_date_init',
+        action='store_true',
+        help=
+        ("Experimental: seed each branch time and the root date from a "
+         "tip-date-consistent estimate (using the tree, the tip dates "
+         "already loaded, and the starting clock rate), instead of the "
+         "default initialisation from branch mutation counts and the clock "
+         "rate alone. On simulated benchmarks this gave similar or better "
+         "accuracy on most scenarios, particularly with a relaxed clock or "
+         "noisy dates, at the same number of SVI steps, but was not "
+         "uniformly better, so it is not yet the default."))
+
     return parser
 
 
@@ -364,6 +377,18 @@ def main():
         "fixed_tau": True
     }
 
+    initial_branch_times_array = None
+    initial_root_date = None
+    if args.tip_date_init:
+        print(
+            "Estimating initial branch times and root date from the tree and tip dates"
+        )
+        branch_time_init, initial_root_date = input_mod.estimate_initial_times(
+            tree, name_to_pos, branch_distances_array, target_dates,
+            clock_rate)
+        initial_branch_times_array = jnp.asarray(
+            [branch_time_init[x] for x in names_init])
+
     my_model = models.models[args.model](
         rows=rows,
         cols=cols,
@@ -372,7 +397,9 @@ def main():
         terminal_target_errors_array=terminal_target_errors_array,
         ref_point_distance=ref_point_distance,
         model_configuration=model_configuration,
-        terminal_names=terminal_names)
+        terminal_names=terminal_names,
+        initial_branch_times_array=initial_branch_times_array,
+        initial_root_date=initial_root_date)
 
     print("Performing SVI:")
     optimiser = optim.ClippedAdam(
