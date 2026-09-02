@@ -449,3 +449,33 @@ def get_rows_and_cols_of_full_sparse_matrix(tree, name_to_pos,
             location += 1
             cur_node = cur_node.parent
     return rows, cols, len(nodes)
+
+
+def get_parent_indices(tree, name_to_pos):
+    """Parent index per node, plus the root's index and the tree's depth.
+
+    Feeds helpers.make_path_sum. The root points at itself, which makes it a
+    fixed point of the pointer-jumping iteration so its descendants stop
+    accumulating there. `tree` must already have every node labelled.
+    """
+    n_nodes = len(name_to_pos)
+    parents = np.arange(n_nodes, dtype=np.int32)
+    depth_of = {}
+    max_depth = 0
+    root_index = 0
+
+    for node in alive_it(helpers.preorder_traversal(tree.root),
+                         title="Recording parents for path sums"):
+        index = name_to_pos[node.label]
+        if node.parent is None:
+            root_index = index
+            depth_of[index] = 0
+            continue
+        parent_index = name_to_pos[node.parent.label]
+        parents[index] = parent_index
+        depth = depth_of[parent_index] + 1
+        depth_of[index] = depth
+        if depth > max_depth:
+            max_depth = depth
+
+    return parents, root_index, max_depth

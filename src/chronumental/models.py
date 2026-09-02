@@ -9,8 +9,11 @@ import collections
 class ChronumentalModelBase(object):
 
     def __init__(self, **kwargs):
-        self.rows = kwargs['rows']
-        self.cols = kwargs['cols']
+        # Sums branch times from the root to every node, by pointer jumping.
+        # See helpers.make_path_sum: this replaced a sparse matrix that cost
+        # memory proportional to total path length over the tree.
+        self.path_sum = kwargs['path_sum']
+        self.terminal_indices = kwargs['terminal_indices']
         self.branch_distances_array = kwargs['branch_distances_array']
         self.terminal_target_dates_array = kwargs[
             'terminal_target_dates_array']
@@ -94,12 +97,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
 
     def calc_dates(self, branch_lengths_array, root_date):
 
-        calc_dates = helpers.do_branch_matmul(
-            self.rows,
-            self.cols,
-            branch_lengths_array=branch_lengths_array,
-            final_size=self.terminal_target_dates_array.shape[0])
-        return calc_dates + root_date
+        all_node_dates = self.path_sum(branch_lengths_array)
+        return all_node_dates[self.terminal_indices] + root_date
 
     def model(self):
         root_date = numpyro.sample("root_date",
@@ -218,12 +217,8 @@ class HorseShoeLike(ChronumentalModelBase):
 
     def calc_dates(self, branch_lengths_array, root_date):
 
-        calc_dates = helpers.do_branch_matmul(
-            self.rows,
-            self.cols,
-            branch_lengths_array=branch_lengths_array,
-            final_size=self.terminal_target_dates_array.shape[0])
-        return calc_dates + root_date
+        all_node_dates = self.path_sum(branch_lengths_array)
+        return all_node_dates[self.terminal_indices] + root_date
 
     def model(self):
         root_date = numpyro.sample("root_date",

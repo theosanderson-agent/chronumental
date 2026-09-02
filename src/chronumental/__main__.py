@@ -5,6 +5,7 @@ GPU_REQUESTED = "--use_gpu" in sys.argv
 if not GPU_REQUESTED:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import datetime
+import math
 
 import pandas as pd
 import jax.numpy as jnp
@@ -260,19 +261,20 @@ def get_parser():
     return parser
 
 
-def _make_convergence_check(all_node_rows, all_node_cols, n_all_nodes):
+def _make_convergence_check(path_sum):
     """Build the two jitted functions behind the early-stopping convergence
     check.
 
-    `node_days` computes every node's predicted date on device, via the same
-    sparse matmul the model already uses for terminal dates
-    (helpers.do_branch_matmul). `mean_abs_change` reduces two such arrays'
-    difference to a single scalar, also on device. Only that scalar needs to
-    cross to the host, so a check's host-visible cost is independent of the
-    number of nodes in the tree -- unlike pulling the whole per-branch time
-    array off device and walking the tree in Python, which costs O(nodes)
-    every check and would eventually cost more than the SVI steps it is
-    meant to save on a very large tree.
+    `node_days` computes every node's predicted date on device, reusing the
+    same pointer-jumping path sum the model uses for terminal dates.
+    `mean_abs_change` reduces two such arrays' difference to a single scalar,
+    also on device, so a check costs one scalar host sync rather than an
+    O(nodes) transfer and a walk in Python.
+
+    Because the path sum already produces every node's date, the check needs
+    no structure of its own. It previously built a second sparse matrix over
+    all nodes, which cost about a gigabyte at 100k tips and had to be
+    subsampled to stay affordable.
 
     Kept as two functions, rather than one that also does the comparison,
     because there is no previous value to compare against on a check's first
@@ -281,9 +283,7 @@ def _make_convergence_check(all_node_rows, all_node_cols, n_all_nodes):
 
     @jax.jit
     def node_days(branch_times, root_date):
-        return helpers.do_branch_matmul(
-            all_node_rows, all_node_cols, branch_times,
-            final_size=n_all_nodes) + root_date
+        return path_sum(branch_times) + root_date
 
     @jax.jit
     def mean_abs_change(current_node_days, previous_node_days):
@@ -388,31 +388,19 @@ def main():
 
     name_to_pos = {x: i for i, x in enumerate(names_init)}
 
-    rows, cols = input_mod.get_rows_and_cols_of_sparse_matrix(
-        tree, terminal_name_to_pos, name_to_pos)
-
-    rows = jnp.asarray(rows)
-    print("Rows array created")
-    cols = jnp.asarray(cols)
-    print("Cols array created")
-
-    # A second sparse matrix, over every node rather than just terminals,
-    # used only for the early-stopping convergence check below: it lets every
-    # node's predicted date be computed on device with the same sparse
-    # matmul the model already uses (helpers.do_branch_matmul), so a check
-    # costs one scalar host sync rather than an O(nodes) transfer-and-walk
-    # from Python every time. `tree` is already fully labelled by
-    # get_initial_branch_lengths_and_name_all_nodes above, and its topology
-    # does not change again, so this is built once regardless of how many
-    # checks the fit ends up doing -- and not at all if the check is off, so
-    # --disable_early_stopping does not pay for it.
-    if check_convergence:
-        all_node_rows, all_node_cols, n_all_nodes = (
-            input_mod.get_rows_and_cols_of_full_sparse_matrix(
-                tree, name_to_pos,
-                max_nodes=args.convergence_check_nodes or None))
-        all_node_rows = jnp.asarray(all_node_rows)
-        all_node_cols = jnp.asarray(all_node_cols)
+    # Root-to-tip sums are computed by pointer jumping over a parent-index
+    # array rather than a sparse matrix of (node, ancestor) pairs. The sparse
+    # form cost memory proportional to the total path length over the tree --
+    # 116 million entries and 2.6 GB on a 300k-tip tree, the largest single
+    # allocation in a run. See helpers.make_path_sum.
+    parent_indices, root_index, max_depth = input_mod.get_parent_indices(
+        tree, name_to_pos)
+    n_rounds = max(1, int(math.ceil(math.log2(max_depth + 1))))
+    print(f"Tree depth {max_depth}; using {n_rounds} pointer-jumping rounds")
+    path_sum = helpers.make_path_sum(jnp.asarray(parent_indices), n_rounds,
+                                     root_index)
+    terminal_indices = jnp.asarray(
+        [name_to_pos[name] for name in terminal_names], dtype=jnp.int32)
 
     if args.clock:
         print(f"Using clock rate {args.clock}")
@@ -420,10 +408,7 @@ def main():
         if args.treat_mutation_units_as_normalised_to_genome_size:
             clock_rate = clock_rate * args.treat_mutation_units_as_normalised_to_genome_size
     else:
-        root_to_tip = helpers.do_branch_matmul(rows,
-                                               cols,
-                                               branch_distances_array,
-                                               final_size=len(terminal_names))
+        root_to_tip = path_sum(branch_distances_array)[terminal_indices]
 
         print(
             "No clock rate specified, performing root-to-tip regression to estimate starting value"
@@ -497,8 +482,8 @@ def main():
             [branch_time_init[x] for x in names_init])
 
     my_model = models.models[args.model](
-        rows=rows,
-        cols=cols,
+        path_sum=path_sum,
+        terminal_indices=terminal_indices,
         branch_distances_array=branch_distances_array,
         terminal_target_dates_array=terminal_target_dates_array,
         terminal_target_errors_array=terminal_target_errors_array,
@@ -527,8 +512,7 @@ def main():
     convergence_check_every = max(args.convergence_check_every, 1)
     if check_convergence:
         convergence_node_days_fn, convergence_mean_abs_change_fn = (
-            _make_convergence_check(all_node_rows, all_node_cols,
-                                    n_all_nodes))
+            _make_convergence_check(path_sum))
     previous_node_days = None
     consecutive_converged = 0
     checks_done = 0
