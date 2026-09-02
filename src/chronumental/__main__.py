@@ -357,22 +357,77 @@ def main():
 
     num_steps = args.steps
     was_interrupted = False
-    lowest_loss = np.inf
-    best_params = None
-    for step in range(num_steps):
 
-        try:
+    # Run the fitting steps in chunks under jax.lax.scan rather than one at a
+    # time from Python. The dominant cost of the old loop was not the gradient
+    # computation but the per-step round trip: every step dispatched from
+    # Python, and reading `loss` to test it forced a blocking device-to-host
+    # transfer. Copying the whole parameter set off the device whenever the
+    # loss improved, which early in fitting is most steps, cost more again.
+    #
+    # Chunk boundaries are chosen so the logged step numbers are unchanged
+    # (step 0, then every tenth, then the last), because that progress output
+    # is something people watch. Best-loss parameters are tracked on device
+    # with jnp.where instead of being copied to the host.
+    #
+    # One behaviour change: Ctrl-C is only noticed between chunks, so it now
+    # stops within CHUNK_SIZE steps rather than after exactly one. A gradient
+    # explosion is likewise reported once per chunk rather than once per step.
+    CHUNK_SIZE = 10
 
-            state, loss = svi.update(state)
-            if np.isnan(loss):
+    def scan_body(carry, _):
+        state, lowest_loss, best_params = carry
+        state, loss = svi.update(state)
+        current_params = svi.get_params(state)
+        # A NaN loss compares False here, so NaN steps never become "best".
+        improved = loss < lowest_loss
+        new_lowest_loss = jnp.where(improved, loss, lowest_loss)
+        new_best_params = jax.tree_util.tree_map(
+            lambda best, current: jnp.where(improved, current, best),
+            best_params, current_params)
+        return (state, new_lowest_loss, new_best_params), (loss,
+                                                           jnp.isnan(loss))
+
+    def run_chunk(state, lowest_loss, best_params, length):
+        carry, (losses, nans) = jax.lax.scan(scan_body,
+                                             (state, lowest_loss, best_params),
+                                             xs=None,
+                                             length=length)
+        return carry + (losses, nans)
+
+    run_chunk = jax.jit(run_chunk, static_argnames=("length", ))
+
+    lowest_loss = jnp.inf
+    # Seeded with the initial parameters, so this is never unset even if every
+    # step produces a NaN loss.
+    best_params = svi.get_params(state)
+
+    step = -1
+    try:
+        remaining = num_steps
+        first_chunk = True
+        while remaining > 0:
+            # The first chunk is a single step so that step 0 is logged, as it
+            # was before.
+            this_chunk_size = 1 if first_chunk else min(CHUNK_SIZE, remaining)
+            first_chunk = False
+
+            state, lowest_loss, best_params, losses, nans = run_chunk(
+                state, lowest_loss, best_params, length=this_chunk_size)
+
+            # The only host sync per chunk, against several per step before.
+            losses = np.asarray(losses)
+            nans = np.asarray(nans)
+            step += this_chunk_size
+            remaining -= this_chunk_size
+
+            if nans.any():
                 print(
                     "There may have been a 'gradient explosion'. This run may not be successful (you can stop it with ctrl-C). Suggested troubleshooting steps: specify a low learning rate e.g. '--lr 0.005'."
                 )
 
-            if loss < lowest_loss:
-                best_params = svi.get_params(state)
-                lowest_loss = loss
             if step % 10 == 0 or step == num_steps - 1:
+                loss = losses[-1]
                 results = my_model.get_logging_results(svi.get_params(state))
                 results['step'] = step
                 results['loss'] = loss
@@ -387,10 +442,9 @@ def main():
                 print(result_string)
                 if args.use_wandb:
                     wandb.log(results)
-        except KeyboardInterrupt:
-            print(f"Interrupting model fitting after {step} steps.")
-            was_interrupted = True
-            break
+    except KeyboardInterrupt:
+        print(f"Interrupting model fitting after {step} steps.")
+        was_interrupted = True
     print("Fit completed. Extracting parameters.")
 
     # best_params is None only if every step produced a NaN loss, in which
