@@ -238,14 +238,19 @@ def get_parser():
         '--tip_date_init',
         action='store_true',
         help=
-        ("Experimental: seed each branch time and the root date from a "
-         "tip-date-consistent estimate (using the tree, the tip dates "
-         "already loaded, and the starting clock rate), instead of the "
-         "default initialisation from branch mutation counts and the clock "
-         "rate alone. On simulated benchmarks this gave similar or better "
-         "accuracy on most scenarios, particularly with a relaxed clock or "
-         "noisy dates, at the same number of SVI steps, but was not "
-         "uniformly better, so it is not yet the default."))
+        ("Seed each branch time and the root date from a tip-date-consistent "
+         "estimate, using the tree, the tip dates already loaded and the "
+         "starting clock rate, instead of initialising from branch mutation "
+         "counts and the clock rate alone. Worth trying when the clock looks "
+         "unreliable: over five replicates per scenario on simulated trees it "
+         "lowered mean absolute error on internal node dates from 27.2 to "
+         "20.9 days under a relaxed clock, 23.7 to 17.2 with noisy or "
+         "imprecise dates, and 18.0 to 12.4 with a short sampling window. It "
+         "is not the default because it is not uniformly better: it was "
+         "marginally worse where dates were missing or all of those problems "
+         "were combined, and on the ebola example dataset it moved the median "
+         "internal node further from treetime, 12.8 to 16.0 days, while "
+         "moving the root much closer, 72 days out to 11."))
 
     return parser
 
