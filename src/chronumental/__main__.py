@@ -83,10 +83,17 @@ def get_parser():
 
     parser.add_argument(
         '--variance_dates',
-        default=0.3,
+        default=10.0,
         type=float,
         help=
-        "Scale factor for date distribution. Essentially a measure of how uncertain we think the measured dates are."
+        ("How uncertain the reported tip dates are taken to be. It multiplies "
+         "each tip's date-precision category (1 for a full date, 30 for "
+         "month-only, 365 for year-only) to give the standard deviation of "
+         "the date likelihood, in days. The old default of 0.3 treated a full "
+         "date as known to within about seven hours, which over-constrains "
+         "the fit: the tip dates then pin each root-to-tip total so tightly "
+         "that the mutation counts have almost no say in how that total is "
+         "divided among the branches on the path.")
     )
 
     parser.add_argument(
