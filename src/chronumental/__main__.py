@@ -259,8 +259,10 @@ def get_parser():
     parser.add_argument(
         '--enforce_exact_clock',
         action='store_true',
-        help=("Will cause the clock rate to be exactly"
-              " fixed at the value specified in clock, rather than learnt"))
+        help=(
+            "Hold the clock rate fixed rather than fitting it. With --clock "
+            "the rate is fixed at that value; without it, the rate is "
+            "estimated once by --clock_estimator and then held there."))
 
     parser.add_argument(
         '--use_gpu',
@@ -368,11 +370,6 @@ def main():
             )
         wandb.init(project=args.wandb_project_name)
         wandb.config.update(args)
-
-    if args.enforce_exact_clock and args.clock is None:
-        raise ValueError(
-            "If you want to enforce the exact clock rate, you must specify it with --clock"
-        )
 
     # Whether the early-stopping convergence check will run at all, decided
     # up front because it also gates building the extra sparse matrix the
