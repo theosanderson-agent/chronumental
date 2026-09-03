@@ -201,3 +201,35 @@ def test_depths_and_levels_agree_with_a_direct_walk():
     assert sorted(np.concatenate(levels)) == list(range(len(parent)))
     for distance, level in enumerate(levels):
         assert np.all(depth[level] == distance)
+
+
+def test_a_flat_clock_is_reported_as_having_no_signal():
+    """Divergence that does not rise with date is the hard case."""
+    from chronumental import diagnostics
+    rng = np.random.default_rng(0)
+    days = np.linspace(0, 3650, 200)
+    divergence = rng.uniform(0, 100, 200)  # unrelated to the dates
+    warnings = diagnostics.report(divergence, days, genome_length=10000)
+    assert any("no clock signal" in w or "weakly related" in w
+               for w in warnings)
+
+
+def test_a_clean_clock_raises_nothing():
+    from chronumental import diagnostics
+    rng = np.random.default_rng(1)
+    days = np.linspace(0, 3650, 200)
+    divergence = 0.02 * days + rng.normal(0, 1.0, 200)
+    assert diagnostics.report(divergence, days, genome_length=100000) == []
+
+
+def test_saturation_is_reported_only_when_the_genome_length_is_known():
+    from chronumental import diagnostics
+    rng = np.random.default_rng(2)
+    days = np.linspace(0, 3650, 200)
+    divergence = 5.0 * days + rng.normal(0, 10.0, 200)  # ~1.8 subs/site at 10kb
+    assert any("substitutions per site" in w
+               for w in diagnostics.report(divergence, days,
+                                           genome_length=10000))
+    # Without a genome length the units are unknown, so it is skipped rather
+    # than guessed at.
+    assert diagnostics.report(divergence, days, genome_length=None) == []

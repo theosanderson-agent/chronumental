@@ -20,6 +20,7 @@ from numpyro.infer import SVI, Trace_ELBO
 from numpyro.infer.autoguide import AutoDelta
 from . import models
 from . import uncertainty
+from . import diagnostics
 from scipy import stats
 
 try:
@@ -589,6 +590,14 @@ def main():
                     dtype=jnp.int32)
             elif dropped:
                 print("Clock filter: would drop every tip; keeping all dates")
+
+    # What the data says about whether it can be dated at all, before any
+    # time is spent fitting it. See chronumental.diagnostics: these are O(n)
+    # and they catch some failures, not all.
+    diagnostics.report(
+        np.asarray(path_sum(branch_distances_array)[terminal_indices]),
+        np.asarray(terminal_target_dates_array),
+        genome_length=args.treat_mutation_units_as_normalised_to_genome_size)
 
     if args.clock:
         print(f"Using clock rate {args.clock}")
