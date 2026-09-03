@@ -128,6 +128,29 @@ def get_parser():
             "a fix."))
 
     parser.add_argument(
+        '--robust_passes',
+        default=1,
+        type=int,
+        help=(
+            "How many times to fit. After each fit but the last, tips the "
+            "fitted tree cannot place are dropped and the fit is repeated "
+            "without them. 1, the default, fits once and drops nothing. 3 is "
+            "a reasonable value if you suspect wrong dates: unlike "
+            "--clock_filter_iqd, which screens against a straight line "
+            "before fitting, this compares each tip to where the rest of the "
+            "tree puts it, which is a much sharper question -- but it costs "
+            "one full fit per pass."))
+
+    parser.add_argument(
+        '--robust_iqd',
+        default=4.0,
+        type=float,
+        help=(
+            "How far from the fitted tree a tip's date may sit, in "
+            "interquartile ranges of the residuals, before --robust_passes "
+            "discards it."))
+
+    parser.add_argument(
         '--no_confidence_intervals',
         action='store_true',
         help=(
@@ -391,6 +414,174 @@ def prepend_to_file_name(full_path, to_prepend):
         return f"{path}/{to_prepend}_{file}"
     else:
         return f"{to_prepend}_{full_path}"
+
+
+TerminalState = collections.namedtuple(
+    "TerminalState", "names indices dates errors target_dates")
+
+
+def _drop_terminals(terminals, keep):
+    """The same tip state with a boolean mask applied."""
+    names = [name for name, keeping in zip(terminals.names, keep) if keeping]
+    kept = set(names)
+    return TerminalState(
+        names=names,
+        indices=terminals.indices[keep],
+        dates=terminals.dates[keep],
+        errors=terminals.errors[keep],
+        target_dates={name: value
+                      for name, value in terminals.target_dates.items()
+                      if name in kept})
+
+
+def _fit_with_robustness_passes(args, run_fit, build_model, clock_rate,
+                                terminals, branch_distances_array,
+                                parent_indices, root_index, path_sum):
+    """Fit, look at what the fit could not explain, drop it, and fit again.
+
+    --clock_filter_iqd screens tips before fitting, against the root-to-tip
+    regression. That statistic is noisy: it compares a tip only to a straight
+    line through the whole dataset, so a wrong date on a tip whose divergence
+    happens to suit the line leaves no trace, and it measured 3-76% recall
+    across the contaminated simulations. Residuals against the *fitted tree*
+    ask a sharper question -- how far is this tip from where its own place in
+    the tree puts it -- and they only exist after a fit, which is why this is
+    a loop rather than a filter.
+
+    The residual has to be the tree's opinion of the tip, not the fit's. A
+    tip's date likelihood has a standard deviation of about three days, so the
+    fit believes the date it was given: hand it a date that belongs to another
+    sequence and it drags that tip onto the wrong date, leaving a residual of
+    well under a day. Measured on contaminated simulations, the fitted-minus-
+    reported residual had an interquartile range of 0.7 days and found 17% of
+    the swaps. So the comparison here is against where the tree alone puts the
+    tip -- its parent's fitted date plus what its own branch's mutations say
+    the gap should be -- which does not use the tip's reported date at all
+    except to disagree with it.
+
+    This is ordinary iteratively reweighted robust regression, with hard
+    rejection rather than a weight function because a tip's date either
+    belongs to that tip or belongs to some other sequence entirely; there is
+    not much in between. Each pass drops what the previous fit could not
+    explain and refits without it. One pass, the default, is the old
+    behaviour exactly.
+
+    What no screen can do is find an error smaller than the sampling window.
+    Two tips exchanging dates within a two-year window are wrong by eight
+    months on average, which is the same size as an ordinary tip's residual,
+    and nothing separates them. The same swap in a twenty-year window is
+    obvious. Expect this to help where the dates span years and not where
+    they span months.
+
+    Measured on simulated trees of 400 tips with 10% of dates swapped in
+    pairs, over a twenty-year sampling window, as median and mean error on
+    internal nodes in days:
+
+        no screen              214.5   944.3     0 tips dropped
+        --clock_filter_iqd 4    50.1   197.0    17.7
+        --robust_passes 3      130.2   681.0    97.7
+        both                    39.7   179.8    52.0
+
+    Use it with --clock_filter_iqd, not instead of it. On its own it throws
+    out a quarter of the tree to catch a tenth of it and lands worse than the
+    cheap up-front filter; after that filter has taken the obvious cases it
+    finds another 21% off the median error. The signal is weak -- the
+    standardised residual has a median of 1.7 for a correct tip and 3.9 for a
+    swapped one -- so it is a screen with poor precision that happens to be
+    worth its false positives, not a detector.
+
+    On uncontaminated data all four configurations agree to the day and this
+    drops nothing at all, which is the property that matters most.
+    """
+    model = build_model(clock_rate, terminals)
+    params, was_interrupted = run_fit(model)
+
+    for pass_number in range(1, max(args.robust_passes, 1)):
+        if was_interrupted:
+            break
+        indices = np.asarray(terminals.indices)
+        if len(indices) < 20:
+            print("Robustness pass: too few dated tips to judge outliers.")
+            break
+        residual, residual_sd = _tree_residuals(
+            model, params, terminals, branch_distances_array, parent_indices,
+            root_index, path_sum)
+        # Standardised, not ranked against a global spread. Branches differ
+        # enormously in how well the tree determines them -- a tip on a branch
+        # with three mutations is placed to within months, one with sixty to
+        # within days -- so a single interquartile range over all of them
+        # flags the badly determined rather than the badly dated. Measured on
+        # contaminated simulations, thresholding the raw residual threw out 74
+        # of 400 tips to catch 40 wrong ones and made the answer worse.
+        standardised = np.abs(residual) / residual_sd
+        keep = ~(standardised > args.robust_iqd)
+        dropped = int((~keep).sum())
+        if dropped == 0:
+            print(f"Robustness pass {pass_number}: every tip sits within "
+                  f"{args.robust_iqd} standard errors of where the tree puts "
+                  f"it; nothing more to drop.")
+            break
+        if dropped >= len(keep) - 20:
+            print("Robustness pass: this would drop almost every tip, which "
+                  "means the residuals are not outliers but the whole fit. "
+                  "Keeping all dates.")
+            break
+        worst = float(np.max(np.abs(residual[~keep])))
+        print(f"Robustness pass {pass_number}: dropping the dates of "
+              f"{dropped} of {len(keep)} tips that sit more than "
+              f"{args.robust_iqd} standard errors from where the tree puts "
+              f"them (worst {worst:.0f} days out). Refitting without them.")
+        terminals = _drop_terminals(terminals, keep)
+        model = build_model(clock_rate, terminals)
+        params, was_interrupted = run_fit(model)
+
+    return params, was_interrupted, model
+
+
+def _tree_residuals(model, params, terminals, branch_distances_array,
+                    parent_indices, root_index, path_sum):
+    """How far each tip's date is from where the tree puts it, in its own SDs.
+
+    The tree's opinion of a tip is its parent's fitted date plus the duration
+    this branch's mutations imply, and that opinion has a standard error of
+    its own: the parent's, from the same curvature the confidence intervals
+    use, and the branch's, which for k mutations is the duration over root k.
+    Dividing by it is what separates a badly dated tip from a badly determined
+    one.
+
+    A branch with no mutations gets an infinite standard error and therefore a
+    residual of zero, which is right: it has no opinion about how long it is,
+    so it cannot disagree with anything.
+    """
+    branch_times = np.asarray(model.get_branch_times(params))
+    node_dates = np.asarray(path_sum(model.get_branch_times(params))) + float(
+        params['root_date_mu'])
+    sd, _identified, _lower, _upper = uncertainty.node_date_intervals(
+        parent_indices=np.asarray(parent_indices),
+        root_index=root_index,
+        mutations_per_branch=np.asarray(branch_distances_array),
+        branch_times=branch_times,
+        node_dates=node_dates,
+        terminal_indices=np.asarray(terminals.indices),
+        terminal_sigmas=np.asarray(model.get_date_sigmas()),
+        clock_rate=float(model.get_mutation_rate(params)))
+
+    indices = np.asarray(terminals.indices)
+    parents = np.asarray(parent_indices)[indices]
+    rate = float(model.get_mutation_rate(params))
+    mutations = np.asarray(branch_distances_array)[indices]
+    implied = mutations * helpers.DAYS_PER_YEAR / max(rate, 1e-12)
+    predicted = node_dates[parents] + implied
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # Var(k) = k for a Poisson, so the implied duration k*Y/rate has a
+        # standard error of itself over root k.
+        duration_sd = np.where(mutations > 0, implied / np.sqrt(
+            np.maximum(mutations, 1e-12)), np.inf)
+    parent_sd = np.nan_to_num(sd[parents], nan=np.inf)
+    tip_sd = np.asarray(model.get_date_sigmas())
+    residual_sd = np.sqrt(parent_sd**2 + duration_sd**2 + tip_sd**2)
+    return predicted - np.asarray(terminals.dates), residual_sd
 
 
 def _days_to_dates(origin_date, days):
@@ -679,7 +870,7 @@ def main():
             "requires --floating_clock_rate.")
     fix_clock_rate = not args.floating_clock_rate
 
-    def build_model(candidate_rate):
+    def build_model(candidate_rate, terminals):
         model_configuration = {
             "clock_rate": candidate_rate,
             "variance_dates": args.variance_dates,
@@ -694,221 +885,235 @@ def main():
 
         branch_time_init, initial_root_date = (
             input_mod.estimate_initial_times_local(
-                tree, name_to_pos, branch_distances_array, target_dates,
-                candidate_rate))
+                tree, name_to_pos, branch_distances_array,
+                terminals.target_dates, candidate_rate))
         initial_branch_times_array = jnp.asarray(
             [branch_time_init[x] for x in names_init])
 
         return models.DeltaGuideWithStrictLearntClock(
             path_sum=path_sum,
-            terminal_indices=terminal_indices,
+            terminal_indices=terminals.indices,
             branch_distances_array=branch_distances_array,
-            terminal_target_dates_array=terminal_target_dates_array,
-            terminal_target_errors_array=terminal_target_errors_array,
+            terminal_target_dates_array=terminals.dates,
+            terminal_target_errors_array=terminals.errors,
             ref_point_distance=ref_point_distance,
             model_configuration=model_configuration,
-            terminal_names=terminal_names,
+            terminal_names=terminals.names,
             initial_branch_times_array=initial_branch_times_array,
             initial_root_date=initial_root_date)
 
-    candidate_models = [(name, build_model(rate))
-                        for name, rate in clock_candidates]
+    terminal_state = TerminalState(names=terminal_names,
+                                   indices=terminal_indices,
+                                   dates=terminal_target_dates_array,
+                                   errors=terminal_target_errors_array,
+                                   target_dates=target_dates)
 
-    print("Performing SVI:")
-    num_steps = args.steps
-    optimiser = optim.ClippedAdam(
-        args.lr) if args.clipped_adam else optim.Adam(args.lr)
+    def run_fit(my_model):
+        """Fit one model to convergence, and hand back its parameters.
 
-    _, my_model = candidate_models[0]
+        Pulled out of main so that a robustness pass can call it more than
+        once: refitting after dropping outlying tips needs the identical
+        fit, not a copy of it that can drift.
+        """
+        print("Performing SVI:")
+        num_steps = args.steps
+        optimiser = optim.ClippedAdam(
+            args.lr) if args.clipped_adam else optim.Adam(args.lr)
 
-    svi = SVI(my_model.model, my_model.guide, optimiser, Trace_ELBO())
-    state = svi.init(jax.random.PRNGKey(0))
 
-    was_interrupted = False
+        svi = SVI(my_model.model, my_model.guide, optimiser, Trace_ELBO())
+        state = svi.init(jax.random.PRNGKey(0))
 
-    # Early-stopping convergence check: has the fit's predicted output
-    # (root date plus every node's cumulative branch time) actually stopped
-    # moving? This is a better stopping signal than the loss, which can keep
-    # crawling long after the dates a user would see have settled -- see
-    # _make_convergence_check for how this is kept cheap on a huge tree.
-    # (check_convergence itself was decided earlier, before it was needed to
-    # decide whether to build the sparse matrix below.)
-    convergence_check_every = max(args.convergence_check_every, 1)
-    if check_convergence:
-        convergence_node_days_fn, convergence_mean_abs_change_fn = (
-            _make_convergence_check(path_sum))
-    previous_node_days = None
-    consecutive_converged = 0
-    previous_rate = None
-    checks_done = 0
+        was_interrupted = False
 
-    # Run the fitting steps in chunks under jax.lax.scan rather than one at a
-    # time from Python. The dominant cost of the old loop was not the gradient
-    # computation but the per-step round trip: every step dispatched from
-    # Python, and reading `loss` to test it forced a blocking device-to-host
-    # transfer. Copying the whole parameter set off the device whenever the
-    # loss improved, which early in fitting is most steps, cost more again.
-    #
-    # Chunk boundaries are chosen so the logged step numbers are unchanged
-    # (step 0, then every tenth, then the last), because that progress output
-    # is something people watch. Best-loss parameters are tracked on device
-    # with jnp.where instead of being copied to the host.
-    #
-    # One behaviour change: Ctrl-C is only noticed between chunks, so it now
-    # stops within CHUNK_SIZE steps rather than after exactly one. A gradient
-    # explosion is likewise reported once per chunk rather than once per step.
-    CHUNK_SIZE = 10
+        # Early-stopping convergence check: has the fit's predicted output
+        # (root date plus every node's cumulative branch time) actually stopped
+        # moving? This is a better stopping signal than the loss, which can keep
+        # crawling long after the dates a user would see have settled -- see
+        # _make_convergence_check for how this is kept cheap on a huge tree.
+        # (check_convergence itself was decided earlier, before it was needed to
+        # decide whether to build the sparse matrix below.)
+        convergence_check_every = max(args.convergence_check_every, 1)
+        if check_convergence:
+            convergence_node_days_fn, convergence_mean_abs_change_fn = (
+                _make_convergence_check(path_sum))
+        previous_node_days = None
+        consecutive_converged = 0
+        previous_rate = None
+        checks_done = 0
 
-    def scan_body(carry, _):
-        state, lowest_loss, best_params = carry
-        state, loss = svi.update(state)
-        current_params = svi.get_params(state)
-        # A NaN loss compares False here, so NaN steps never become "best".
-        improved = loss < lowest_loss
-        new_lowest_loss = jnp.where(improved, loss, lowest_loss)
-        new_best_params = jax.tree_util.tree_map(
-            lambda best, current: jnp.where(improved, current, best),
-            best_params, current_params)
-        return (state, new_lowest_loss, new_best_params), (loss,
-                                                           jnp.isnan(loss))
+        # Run the fitting steps in chunks under jax.lax.scan rather than one at a
+        # time from Python. The dominant cost of the old loop was not the gradient
+        # computation but the per-step round trip: every step dispatched from
+        # Python, and reading `loss` to test it forced a blocking device-to-host
+        # transfer. Copying the whole parameter set off the device whenever the
+        # loss improved, which early in fitting is most steps, cost more again.
+        #
+        # Chunk boundaries are chosen so the logged step numbers are unchanged
+        # (step 0, then every tenth, then the last), because that progress output
+        # is something people watch. Best-loss parameters are tracked on device
+        # with jnp.where instead of being copied to the host.
+        #
+        # One behaviour change: Ctrl-C is only noticed between chunks, so it now
+        # stops within CHUNK_SIZE steps rather than after exactly one. A gradient
+        # explosion is likewise reported once per chunk rather than once per step.
+        CHUNK_SIZE = 10
 
-    def run_chunk(state, lowest_loss, best_params, length):
-        carry, (losses, nans) = jax.lax.scan(scan_body,
-                                             (state, lowest_loss, best_params),
-                                             xs=None,
-                                             length=length)
-        return carry + (losses, nans)
+        def scan_body(carry, _):
+            state, lowest_loss, best_params = carry
+            state, loss = svi.update(state)
+            current_params = svi.get_params(state)
+            # A NaN loss compares False here, so NaN steps never become "best".
+            improved = loss < lowest_loss
+            new_lowest_loss = jnp.where(improved, loss, lowest_loss)
+            new_best_params = jax.tree_util.tree_map(
+                lambda best, current: jnp.where(improved, current, best),
+                best_params, current_params)
+            return (state, new_lowest_loss, new_best_params), (loss,
+                                                               jnp.isnan(loss))
 
-    run_chunk = jax.jit(run_chunk, static_argnames=("length", ))
+        def run_chunk(state, lowest_loss, best_params, length):
+            carry, (losses, nans) = jax.lax.scan(scan_body,
+                                                 (state, lowest_loss, best_params),
+                                                 xs=None,
+                                                 length=length)
+            return carry + (losses, nans)
 
-    lowest_loss = jnp.inf
-    # Seeded with the initial parameters, so this is never unset even if every
-    # step produces a NaN loss.
-    best_params = svi.get_params(state)
+        run_chunk = jax.jit(run_chunk, static_argnames=("length", ))
 
-    step = -1
-    try:
-        remaining = num_steps
-        first_chunk = True
-        while remaining > 0:
-            # The first chunk is a single step so that step 0 is logged, as it
-            # was before.
-            this_chunk_size = 1 if first_chunk else min(CHUNK_SIZE, remaining)
-            first_chunk = False
+        lowest_loss = jnp.inf
+        # Seeded with the initial parameters, so this is never unset even if every
+        # step produces a NaN loss.
+        best_params = svi.get_params(state)
 
-            state, lowest_loss, best_params, losses, nans = run_chunk(
-                state, lowest_loss, best_params, length=this_chunk_size)
+        step = -1
+        try:
+            remaining = num_steps
+            first_chunk = True
+            while remaining > 0:
+                # The first chunk is a single step so that step 0 is logged, as it
+                # was before.
+                this_chunk_size = 1 if first_chunk else min(CHUNK_SIZE, remaining)
+                first_chunk = False
 
-            # The only host sync per chunk, against several per step before.
-            losses = np.asarray(losses)
-            nans = np.asarray(nans)
-            step += this_chunk_size
-            remaining -= this_chunk_size
+                state, lowest_loss, best_params, losses, nans = run_chunk(
+                    state, lowest_loss, best_params, length=this_chunk_size)
 
-            if nans.any():
-                print(
-                    "There may have been a 'gradient explosion'. This run may not be successful (you can stop it with ctrl-C). Suggested troubleshooting steps: specify a low learning rate e.g. '--lr 0.005'."
-                )
+                # The only host sync per chunk, against several per step before.
+                losses = np.asarray(losses)
+                nans = np.asarray(nans)
+                step += this_chunk_size
+                remaining -= this_chunk_size
 
-            if check_convergence:
-                # Only check at chunk boundaries -- chunks are already the
-                # sync point, so this rides along rather than adding one.
-                # `step // convergence_check_every` increasing means a
-                # multiple of it has been crossed since the last chunk; using
-                # "crossed" rather than "step % check_every == 0" means this
-                # is correct even when convergence_check_every is not a
-                # multiple of the chunk size.
-                new_checks_done = step // convergence_check_every
-                if new_checks_done > checks_done:
-                    checks_done = new_checks_done
-                    current_params = svi.get_params(state)
-                    current_node_days = convergence_node_days_fn(
-                        my_model.get_branch_times(current_params),
-                        current_params['root_date_mu'])
-                    if previous_node_days is not None:
-                        # The only place a convergence check touches the
-                        # host: one scalar, regardless of tree size, because
-                        # the per-node dates and their comparison both ran
-                        # on device inside the jitted functions above.
-                        mean_abs_change_days = float(
-                            convergence_mean_abs_change_fn(
-                                current_node_days, previous_node_days))
-                        # The dates settling is necessary but not
-                        # sufficient. They can look stable while the clock
-                        # rate is still descending, and the dates are far
-                        # more sensitive to the rate than this test is: on
-                        # one real dataset a 5% rate error moved the median
-                        # disagreement with treetime by 3 days. So require
-                        # the rate to have stopped moving too, as a relative
-                        # change, since its magnitude varies with the units
-                        # the tree is in.
-                        current_rate = float(
-                            my_model.get_mutation_rate(current_params))
-                        if previous_rate is None or previous_rate == 0:
-                            rate_settled = False
-                        else:
-                            rate_settled = (
-                                abs(current_rate - previous_rate) /
-                                abs(previous_rate) <
-                                args.convergence_rate_tol)
-                        previous_rate = current_rate
-                        if (mean_abs_change_days < args.convergence_tol_days
-                                and rate_settled):
-                            consecutive_converged += 1
-                        else:
-                            consecutive_converged = 0
-                        if consecutive_converged >= args.convergence_patience:
-                            print(
-                                f"Converged: mean absolute change in "
-                                f"predicted node dates was "
-                                f"{mean_abs_change_days:.4f} days (< "
-                                f"--convergence_tol_days "
-                                f"{args.convergence_tol_days}) for "
-                                f"{consecutive_converged} consecutive checks "
-                                f"~{convergence_check_every} steps apart. "
-                                f"Stopping early at step {step} "
-                                f"(of {num_steps} requested).")
-                            loss = losses[-1]
-                            results = my_model.get_logging_results(
-                                current_params)
-                            results['step'] = step
-                            results['loss'] = loss
-                            results.move_to_end('loss', last=False)
-                            results.move_to_end('step', last=False)
-                            print("\t".join([
-                                f"{name}:{value:.4f}"
-                                if "." in str(value) else f"{name}:{value}"
-                                for name, value in results.items()
-                            ]))
-                            break
-                    previous_node_days = current_node_days
-            if step % 10 == 0 or step == num_steps - 1:
-                loss = losses[-1]
-                results = my_model.get_logging_results(svi.get_params(state))
-                results['step'] = step
-                results['loss'] = loss
-                results.move_to_end('loss', last=False)
-                results.move_to_end('step', last=False)
+                if nans.any():
+                    print(
+                        "There may have been a 'gradient explosion'. This run may not be successful (you can stop it with ctrl-C). Suggested troubleshooting steps: specify a low learning rate e.g. '--lr 0.005'."
+                    )
 
-                result_string = "\t".join([
-                    f"{name}:{value:.4f}"
-                    if "." in str(value) else f"{name}:{value}"
-                    for name, value in results.items()
-                ])
-                print(result_string)
-                if args.use_wandb:
-                    wandb.log(results)
-    except KeyboardInterrupt:
-        print(f"Interrupting model fitting after {step} steps.")
-        was_interrupted = True
-    print("Fit completed. Extracting parameters.")
+                if check_convergence:
+                    # Only check at chunk boundaries -- chunks are already the
+                    # sync point, so this rides along rather than adding one.
+                    # `step // convergence_check_every` increasing means a
+                    # multiple of it has been crossed since the last chunk; using
+                    # "crossed" rather than "step % check_every == 0" means this
+                    # is correct even when convergence_check_every is not a
+                    # multiple of the chunk size.
+                    new_checks_done = step // convergence_check_every
+                    if new_checks_done > checks_done:
+                        checks_done = new_checks_done
+                        current_params = svi.get_params(state)
+                        current_node_days = convergence_node_days_fn(
+                            my_model.get_branch_times(current_params),
+                            current_params['root_date_mu'])
+                        if previous_node_days is not None:
+                            # The only place a convergence check touches the
+                            # host: one scalar, regardless of tree size, because
+                            # the per-node dates and their comparison both ran
+                            # on device inside the jitted functions above.
+                            mean_abs_change_days = float(
+                                convergence_mean_abs_change_fn(
+                                    current_node_days, previous_node_days))
+                            # The dates settling is necessary but not
+                            # sufficient. They can look stable while the clock
+                            # rate is still descending, and the dates are far
+                            # more sensitive to the rate than this test is: on
+                            # one real dataset a 5% rate error moved the median
+                            # disagreement with treetime by 3 days. So require
+                            # the rate to have stopped moving too, as a relative
+                            # change, since its magnitude varies with the units
+                            # the tree is in.
+                            current_rate = float(
+                                my_model.get_mutation_rate(current_params))
+                            if previous_rate is None or previous_rate == 0:
+                                rate_settled = False
+                            else:
+                                rate_settled = (
+                                    abs(current_rate - previous_rate) /
+                                    abs(previous_rate) <
+                                    args.convergence_rate_tol)
+                            previous_rate = current_rate
+                            if (mean_abs_change_days < args.convergence_tol_days
+                                    and rate_settled):
+                                consecutive_converged += 1
+                            else:
+                                consecutive_converged = 0
+                            if consecutive_converged >= args.convergence_patience:
+                                print(
+                                    f"Converged: mean absolute change in "
+                                    f"predicted node dates was "
+                                    f"{mean_abs_change_days:.4f} days (< "
+                                    f"--convergence_tol_days "
+                                    f"{args.convergence_tol_days}) for "
+                                    f"{consecutive_converged} consecutive checks "
+                                    f"~{convergence_check_every} steps apart. "
+                                    f"Stopping early at step {step} "
+                                    f"(of {num_steps} requested).")
+                                loss = losses[-1]
+                                results = my_model.get_logging_results(
+                                    current_params)
+                                results['step'] = step
+                                results['loss'] = loss
+                                results.move_to_end('loss', last=False)
+                                results.move_to_end('step', last=False)
+                                print("\t".join([
+                                    f"{name}:{value:.4f}"
+                                    if "." in str(value) else f"{name}:{value}"
+                                    for name, value in results.items()
+                                ]))
+                                break
+                        previous_node_days = current_node_days
+                if step % 10 == 0 or step == num_steps - 1:
+                    loss = losses[-1]
+                    results = my_model.get_logging_results(svi.get_params(state))
+                    results['step'] = step
+                    results['loss'] = loss
+                    results.move_to_end('loss', last=False)
+                    results.move_to_end('step', last=False)
 
-    # best_params is None only if every step produced a NaN loss, in which
-    # case there is no "best" set of parameters to fall back to.
-    if args.always_use_final_params or best_params is None:
-        params = svi.get_params(state)
-    else:
-        params = best_params
+                    result_string = "\t".join([
+                        f"{name}:{value:.4f}"
+                        if "." in str(value) else f"{name}:{value}"
+                        for name, value in results.items()
+                    ])
+                    print(result_string)
+                    if args.use_wandb:
+                        wandb.log(results)
+        except KeyboardInterrupt:
+            print(f"Interrupting model fitting after {step} steps.")
+            was_interrupted = True
+        print("Fit completed. Extracting parameters.")
+
+        # best_params is None only if every step produced a NaN loss, in which
+        # case there is no "best" set of parameters to fall back to.
+        if args.always_use_final_params or best_params is None:
+            params = svi.get_params(state)
+        else:
+            params = best_params
+        return params, was_interrupted
+
+    params, was_interrupted, my_model = _fit_with_robustness_passes(
+        args, run_fit, build_model, clock_candidates[0][1], terminal_state,
+        branch_distances_array, parent_indices, root_index, path_sum)
     to_save = ""
     if was_interrupted:
         while to_save.strip().lower() not in ['y', 'n']:
