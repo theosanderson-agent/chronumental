@@ -83,16 +83,20 @@ def get_parser():
 
     parser.add_argument(
         '--clock_estimator',
-        choices=('theil-sen', 'phylogenetic', 'objective-selected'),
+        choices=('theil-sen', 'phylogenetic'),
         default='theil-sen',
         help=(
-            "Estimator used for the starting clock when --clock is omitted. "
-            "The default is the existing robust root-to-tip Theil-Sen "
-            "regression. 'phylogenetic' uses independent contrasts so tips "
-            "that share ancestry are not treated as independent; it is "
-            "experimental and can be less robust under a relaxed clock. "
-            "'objective-selected' tries one optimization step from each "
-            "initialization and continues from whichever has lower loss."))
+            "Estimator for the starting clock rate when --clock is omitted. "
+            "'theil-sen' is a robust root-to-tip regression that treats tips "
+            "as independent observations even where they share ancestry. "
+            "'phylogenetic' instead uses Felsenstein's independent contrasts, "
+            "which corrects for that shared ancestry. Contrasts are the more "
+            "principled estimator, but they fit a lower rate, and since the "
+            "root is the node furthest from any dated tip it is the most "
+            "sensitive to that: on deep trees the lower rate can push the "
+            "root implausibly far back. 'phylogenetic' does better on "
+            "shallow, densely sampled trees; 'theil-sen' is the safer "
+            "default across a range of tree depths."))
 
     parser.add_argument(
         '--phylogenetic_clock_variance_floor',
@@ -496,7 +500,7 @@ def main():
         slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
             y_fit, x_fit)
         theil_sen_rate = slope_per_day * 365
-        if args.clock_estimator in ('phylogenetic', 'objective-selected'):
+        if args.clock_estimator == 'phylogenetic':
             phylogenetic_rate = input_mod.estimate_clock_rate_phylogenetic(
                 tree, name_to_pos, np.asarray(branch_distances_array),
                 np.asarray(terminal_indices),
@@ -504,11 +508,7 @@ def main():
                 np.asarray(terminal_target_errors_array),
                 variance_floor=args.phylogenetic_clock_variance_floor)
 
-        if args.clock_estimator == 'phylogenetic':
             clock_candidates = [('phylogenetic', phylogenetic_rate)]
-        elif args.clock_estimator == 'objective-selected':
-            clock_candidates = [('theil-sen', theil_sen_rate),
-                                ('phylogenetic', phylogenetic_rate)]
         else:
             clock_candidates = [('theil-sen', theil_sen_rate)]
 
@@ -571,29 +571,7 @@ def main():
     optimiser = optim.ClippedAdam(
         args.lr) if args.clipped_adam else optim.Adam(args.lr)
 
-    if len(candidate_models) > 1:
-        pilot_results = []
-        for candidate_name, candidate_model in candidate_models:
-            pilot_svi = SVI(candidate_model.model, candidate_model.guide,
-                            optimiser, Trace_ELBO())
-            pilot_state = pilot_svi.init(jax.random.PRNGKey(0))
-            _, pilot_loss = pilot_svi.update(pilot_state)
-            pilot_loss = float(pilot_loss)
-            # Each starting estimate historically also set the upper bound of
-            # a very broad Uniform clock prior. Its log-normalising constant
-            # differs by log(starting rate), despite having no effect on the
-            # fitted parameters this far from the bound. Remove that constant
-            # so the pilot compares the same objective rather than favoring a
-            # numerically smaller prior range.
-            comparable_loss = pilot_loss - math.log(candidate_model.clock_rate)
-            pilot_results.append((comparable_loss, candidate_name,
-                                  candidate_model))
-            print(f"Initial {candidate_name} loss: {pilot_loss:.4f} "
-                  f"(comparable: {comparable_loss:.4f})")
-        _, selected_name, my_model = min(pilot_results, key=lambda item: item[0])
-        print(f"Selected {selected_name} initialization by lower loss")
-    else:
-        _, my_model = candidate_models[0]
+    _, my_model = candidate_models[0]
 
     svi = SVI(my_model.model, my_model.guide, optimiser, Trace_ELBO())
     state = svi.init(jax.random.PRNGKey(0))
