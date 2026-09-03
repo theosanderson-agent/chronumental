@@ -270,6 +270,73 @@ def get_initial_branch_lengths_and_name_all_nodes(tree):
     return initial_branch_lengths, invented_labels
 
 
+def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
+                                 target_dates, clock_rate, floor_days=0.01):
+    """Position every node from its immediate children, tips on their dates.
+
+    Tips start exactly where their metadata says. Each internal node is then
+    placed, walking up the tree, at the mean over its children of the child's
+    position minus what that child's own branch's mutations represent at the
+    clock rate.
+
+    Averaging over children rather than over all descendant tips is the point.
+    A flat average over tips lets a densely sampled recent clade outvote a
+    sparse deep lineage, and recent tips are exactly the ones whose implied
+    ancestor date is most distorted by an error in the clock rate, because
+    their divergence has had longest to accumulate it. Weighting each child
+    subtree equally is the same correction for shared ancestry that the
+    independent-contrasts clock estimator makes.
+
+    Returns (branch_time_init, root_date_init) in the same day-relative-to-
+    reference units as target_dates.
+    """
+    days_per_mutation = helpers.DAYS_PER_YEAR / clock_rate
+
+    def own_mutation_days(label):
+        pos = name_to_pos.get(label)
+        if pos is None:
+            return 0.0
+        return float(branch_distances_array[pos]) * days_per_mutation
+
+    estimate = {}
+    for node in tree.traverse_postorder():
+        label = node.label
+        if node.is_leaf():
+            estimate[label] = target_dates.get(label)
+            continue
+        implied = []
+        for child in node.children:
+            value = estimate.get(child.label)
+            if value is None:
+                continue
+            implied.append(value - own_mutation_days(child.label))
+        estimate[label] = (sum(implied) / len(implied)) if implied else None
+
+    # A node with no dated descendant has nothing to say for itself; it takes
+    # its parent's position plus its own branch, top-down. The same pass keeps
+    # children from preceding their parents, which both guarantees positive
+    # branch times and stops a noisy local estimate inverting the order.
+    adjusted = {}
+    branch_time_init = {}
+    root_label = tree.root.label
+    for node in tree.traverse_preorder():
+        label = node.label
+        floor = max(floor_days, own_mutation_days(label))
+        if node.parent is None:
+            adjusted[label] = (estimate.get(label)
+                               if estimate.get(label) is not None else 0.0)
+            branch_time_init[label] = floor
+            continue
+        parent = adjusted[node.parent.label]
+        candidate = estimate.get(label)
+        if candidate is None:
+            candidate = parent + floor
+        adjusted[label] = max(candidate, parent + floor)
+        branch_time_init[label] = adjusted[label] - parent
+
+    return branch_time_init, adjusted[root_label]
+
+
 def estimate_clock_rate_phylogenetic(tree, name_to_position, branch_distances,
                                      target_indices, target_dates, target_errors,
                                      variance_floor=5.0):

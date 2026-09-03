@@ -21,10 +21,15 @@ class ChronumentalModelBase(object):
             'terminal_target_errors_array']
         self.ref_point_distance = kwargs['ref_point_distance']
 
+        self.initial_branch_times_array = kwargs.get(
+            'initial_branch_times_array')
+        self.initial_root_date = kwargs.get('initial_root_date')
         self.set_initial_time()
         self.terminal_names = kwargs['terminal_names']
 
     def get_initial_root_date(self):
+        if self.initial_root_date is not None:
+            return self.initial_root_date
         return (-helpers.DAYS_PER_YEAR * self.ref_point_distance /
                 self.clock_rate)
 
@@ -106,6 +111,10 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         return results
 
     def set_initial_time(self):
+        if self.initial_branch_times_array is not None:
+            self.initial_time = jnp.maximum(self.initial_branch_times_array,
+                                            1e-3)
+            return
         self.initial_time = jnp.maximum(
             helpers.DAYS_PER_YEAR * (self.branch_distances_array) /
             self.clock_rate,

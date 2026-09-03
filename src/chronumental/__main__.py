@@ -544,6 +544,13 @@ def main():
             "root_date_prior_scale": args.root_date_prior_scale_days,
         }
 
+        branch_time_init, initial_root_date = (
+            input_mod.estimate_initial_times_local(
+                tree, name_to_pos, branch_distances_array, target_dates,
+                candidate_rate))
+        initial_branch_times_array = jnp.asarray(
+            [branch_time_init[x] for x in names_init])
+
         return models.DeltaGuideWithStrictLearntClock(
             path_sum=path_sum,
             terminal_indices=terminal_indices,
@@ -552,7 +559,9 @@ def main():
             terminal_target_errors_array=terminal_target_errors_array,
             ref_point_distance=ref_point_distance,
             model_configuration=model_configuration,
-            terminal_names=terminal_names)
+            terminal_names=terminal_names,
+            initial_branch_times_array=initial_branch_times_array,
+            initial_root_date=initial_root_date)
 
     candidate_models = [(name, build_model(rate))
                         for name, rate in clock_candidates]
