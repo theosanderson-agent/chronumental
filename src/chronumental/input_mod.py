@@ -334,7 +334,7 @@ def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
         adjusted[label] = max(candidate, parent + floor)
         branch_time_init[label] = adjusted[label] - parent
 
-    return branch_time_init, adjusted[root_label]
+    return branch_time_init, adjusted[root_label], adjusted
 
 
 def estimate_clock_rate_phylogenetic(tree, name_to_position, branch_distances,

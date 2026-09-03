@@ -109,6 +109,20 @@ def get_parser():
             "noiseless by the Gaussian contrast approximation."))
 
     parser.add_argument(
+        '--parameterisation',
+        choices=('dates', 'durations'),
+        default='dates',
+        help=(
+            "Whether the fitted parameters are node dates or branch "
+            "durations. They describe the same model; what differs is the "
+            "shape of its objective. In durations a tip's date is a sum over "
+            "its whole root-to-tip path, so second derivatives couple every "
+            "ancestor-descendant pair. In dates the tip term is diagonal and "
+            "the mutation term couples only parent to child, leaving a "
+            "tree-structured objective whose curvature is O(n) and which can "
+            "therefore supply a standard error on every node date."))
+
+    parser.add_argument(
         '--clock_filter_iqd',
         default=0.0,
         type=float,
@@ -588,12 +602,30 @@ def main():
             "root_date_prior_scale": args.root_date_prior_scale_days,
         }
 
-        branch_time_init, initial_root_date = (
+        branch_time_init, initial_root_date, node_date_init = (
             input_mod.estimate_initial_times_local(
                 tree, name_to_pos, branch_distances_array, target_dates,
                 candidate_rate))
         initial_branch_times_array = jnp.asarray(
             [branch_time_init[x] for x in names_init])
+        initial_node_dates = jnp.asarray(
+            [node_date_init[x] for x in names_init])
+
+        if args.parameterisation == 'dates':
+            return models.DeltaGuideNodeDates(
+                path_sum=path_sum,
+                terminal_indices=terminal_indices,
+                branch_distances_array=branch_distances_array,
+                terminal_target_dates_array=terminal_target_dates_array,
+                terminal_target_errors_array=terminal_target_errors_array,
+                ref_point_distance=ref_point_distance,
+                model_configuration=model_configuration,
+                terminal_names=terminal_names,
+                parent_indices=parent_indices,
+                root_index=root_index,
+                initial_node_dates=initial_node_dates,
+                initial_branch_times_array=initial_branch_times_array,
+                initial_root_date=initial_root_date)
 
         return models.DeltaGuideWithStrictLearntClock(
             path_sum=path_sum,
@@ -612,8 +644,19 @@ def main():
 
     print("Performing SVI:")
     num_steps = args.steps
+    step_size = args.lr
+    if args.parameterisation == 'dates':
+        # A fixed Adam step cannot both reach and refine here. Its magnitude
+        # is about the learning rate whatever the gradient, so it never
+        # settles below that; in duration coordinates the logarithm shrank
+        # the absolute step as a branch got shorter, and nothing does that
+        # now. Decaying the step recovers it: early steps cross the tree,
+        # late ones resolve to well under a day.
+        decay = 1e-3
+        total = max(args.steps, 1)
+        step_size = lambda i: args.lr * decay ** (jnp.minimum(i, total) / total)
     optimiser = optim.ClippedAdam(
-        args.lr) if args.clipped_adam else optim.Adam(args.lr)
+        step_size) if args.clipped_adam else optim.Adam(step_size)
 
     _, my_model = candidate_models[0]
 
@@ -720,7 +763,7 @@ def main():
                     current_params = svi.get_params(state)
                     current_node_days = convergence_node_days_fn(
                         my_model.get_branch_times(current_params),
-                        current_params['root_date_mu'])
+                        my_model.get_root_date(current_params))
                     if previous_node_days is not None:
                         # The only place a convergence check touches the
                         # host: one scalar, regardless of tree size, because
@@ -872,7 +915,7 @@ def main():
         output_dates = {
             name:
             origin_date +
-            datetime.timedelta(days=(x + params['root_date_mu'].tolist()))
+            datetime.timedelta(days=(x + float(my_model.get_root_date(params))))
             for name, x in total_lengths_in_time.items()
         }
 
