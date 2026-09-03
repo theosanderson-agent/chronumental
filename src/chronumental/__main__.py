@@ -110,7 +110,7 @@ def get_parser():
 
     parser.add_argument(
         '--variance_dates',
-        default=10.0,
+        default=3.0,
         type=float,
         help=
         ("How uncertain the reported tip dates are taken to be. It multiplies "
