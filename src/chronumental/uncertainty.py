@@ -30,18 +30,38 @@ here as two sweeps over the tree's levels.
 
 Two things this has to get right beyond writing the matrix down.
 
-The clock rate. The date block above conditions on the fitted rate, but the
-root date is essentially (oldest tip - divergence/rate), so its uncertainty
-is dominated by the rate's. Conditioning on the rate makes exactly the
-interval users care about most far too narrow. The rate enters as one extra
-parameter coupled to everything, so the augmented Hessian is the tree block
-A bordered by a dense vector b and a scalar c, and
+The clock rate, and why the closed form for it does not work. The date block
+above conditions on the fitted rate, but the root date is essentially (oldest
+tip - divergence/rate), so its uncertainty is dominated by the rate's, and
+conditioning makes exactly the interval users care about most too narrow. The
+rate enters as one extra parameter coupled to everything, so the augmented
+Hessian is the tree block A bordered by a dense vector b and a scalar c:
 
     var_v = (A^-1)_vv + (A^-1 b)_v^2 / (c - b' A^-1 b)
 
-which costs one extra tree solve. Note this is the uncertainty in the rate
-*implied by the tree*, and it is included even when --clock pinned the rate
-for the fit: pinning a value does not make it known exactly.
+which costs one extra tree solve. That is the right expression and it is
+implemented and tested here, but on real fits the Schur complement
+c - b'A^-1 b comes out *negative*, so the correction is refused and the
+intervals reported are conditional on the rate. Measured, as the residual as
+a fraction of c: ncov -1.4%, zika -8.4%, measles -57%, ebola catastrophically
+worse. Every dataset tried.
+
+The reason is structural rather than numerical. With no tip dates the model is
+exactly scale invariant -- send mu to mu*a and every duration to t/a and
+nothing changes -- so the whole of c is cancelled by b'A^-1 b and the tips are
+the only thing making the residual positive. It is a small difference of large
+numbers. Worse, the objective is not jointly convex in (rate, durations): the
+term exp(theta)*t has Hessian [[e^th t, e^th],[e^th, 0]] with determinant
+-e^(2 th) < 0, so the bordered matrix is indefinite except at a joint
+stationary point, and chronumental's default pins the rate at an estimate that
+is not one.
+
+So the rate's contribution to a date interval is not available this cheaply.
+The route that does work is the grid: refitting the durations at each of a
+series of fixed rates gives a well-behaved profile likelihood whose curvature
+in log(rate) is clean, and it costs one fit per grid point. That is not built
+here. Until it is, these intervals are conditional on the clock rate, they
+say so at the point of use, and deep nodes are narrower than they should be.
 
 Zero-mutation branches. A branch with no mutations contributes no curvature
 at all, so the weights k_j/t_j^2 disconnect the tree. Take the components of
@@ -214,11 +234,13 @@ def node_date_intervals(parent_indices,
     of them, both in days; `mutations_per_branch` is the observed count on
     each branch, indexed like the fit; `clock_rate` is in mutations per year.
 
-    Returns (sd, identified, lower, upper), where `sd` is the standard
-    deviation for identified nodes and NaN elsewhere, `identified` is False
-    for nodes whose date this objective does not estimate, and `lower`/`upper`
-    are the 95% interval, replaced for unidentified nodes by the bracket the
-    ordering constraints put them in.
+    Returns (sd, identified, lower, upper, rate_included). `sd` is the
+    standard deviation for identified nodes and NaN elsewhere; `identified` is
+    False for nodes whose date this objective does not estimate; `lower` and
+    `upper` are the 95% interval, replaced for unidentified nodes by the
+    bracket the ordering constraints put them in; and `rate_included` says
+    whether the clock rate's own uncertainty made it in, which on real fits it
+    does not -- see the module docstring.
     """
     parent = np.asarray(parent_indices, dtype=np.int64)
     n = len(parent)
@@ -268,9 +290,11 @@ def node_date_intervals(parent_indices,
     factor = _TreeFactor(parent, weight, diagonal, levels, root_index)
     variance = factor.marginal_variances()
 
+    rate_included = False
     if include_rate_uncertainty:
-        variance = _add_rate_uncertainty(factor, parent, t, k, clock_rate,
-                                         identified, root_index, variance, n)
+        variance, rate_included = _add_rate_uncertainty(
+            factor, parent, t, k, clock_rate, identified, root_index,
+            variance, n)
 
     sd = np.sqrt(np.maximum(variance, 0.0))
     lower = dates - 1.96 * sd
@@ -279,7 +303,7 @@ def node_date_intervals(parent_indices,
         lower[~identified], upper[~identified] = _ordering_bracket(
             parent, dates, identified, levels, lower, upper)
         sd[~identified] = np.nan
-    return sd, identified, lower, upper
+    return sd, identified, lower, upper, rate_included
 
 
 def _add_rate_uncertainty(factor, parent, t, k, clock_rate, identified,
@@ -295,11 +319,14 @@ def _add_rate_uncertainty(factor, parent, t, k, clock_rate, identified,
     Unidentified nodes are held out of the cross vector: their entry in it is
     real, but their block was anchored arbitrarily above, so including them
     would let that arbitrary choice leak into the rate's variance.
+
+    Returns the variances and whether the correction was actually applied. On
+    every real dataset tried it is not.
     """
     per_day = clock_rate / helpers.DAYS_PER_YEAR
     total_duration = float(t.sum())
     if total_duration <= 0 or per_day <= 0:
-        return variance
+        return variance, False
     children = np.bincount(parent, minlength=n).astype(np.float64)
     children[root_index] -= 1.0  # its self-parent edge is not a child
     has_parent = np.ones(n, dtype=np.float64)
@@ -312,10 +339,12 @@ def _add_rate_uncertainty(factor, parent, t, k, clock_rate, identified,
     u = factor.solve(cross)
     schur = rate_curvature - float(cross @ u)
     if not np.isfinite(schur) or schur <= 0:
-        # The tree alone does not pin the rate; leave the conditional
-        # variances rather than report a negative correction.
-        return variance
-    return variance + u**2 / schur
+        # This is the usual outcome on a real fit, not a rare guard. See the
+        # module docstring: the residual is a small difference of large
+        # numbers and the bordered matrix is indefinite away from a joint
+        # stationary point. Report the conditional variances and say so.
+        return variance, False
+    return variance + u**2 / schur, True
 
 
 def _ordering_bracket(parent, dates, identified, levels, lower, upper):

@@ -88,7 +88,7 @@ def test_marginal_variances_match_a_dense_inverse(trial):
         rng, int(rng.integers(8, 40)))
     dense, _, _, identified, _ = build_dense(parent, root, leaves, times,
                                              dates, mutations, sigmas)
-    sd, got_identified, _, _ = uncertainty.node_date_intervals(
+    sd, got_identified, _, _, _ = uncertainty.node_date_intervals(
         parent, root, mutations, times, dates, leaves, sigmas,
         clock_rate=RATE, include_rate_uncertainty=False)
     expected = np.diag(np.linalg.inv(dense))
@@ -134,9 +134,10 @@ def test_rate_correction_matches_the_bordered_inverse(trial):
     bordered[n, n] = per_day * times.sum()
     schur = bordered[n, n] - cross @ np.linalg.solve(dense, cross)
 
-    sd, _, _, _ = uncertainty.node_date_intervals(
+    sd, _, _, _, applied = uncertainty.node_date_intervals(
         parent, root, mutations, times, dates, leaves, sigmas,
         clock_rate=RATE, include_rate_uncertainty=True)
+    assert applied == (schur > 0)
     if schur <= 0:
         # The tree does not pin the rate, so the correction is declined and
         # the conditional variances stand.
@@ -151,10 +152,10 @@ def test_rate_uncertainty_only_widens():
     """It adds u^2/schur, which cannot be negative, so no interval shrinks."""
     rng = np.random.default_rng(7)
     parent, root, leaves, times, dates, mutations, sigmas = simulate(rng, 60)
-    conditioned, identified, _, _ = uncertainty.node_date_intervals(
+    conditioned, identified, _, _, _ = uncertainty.node_date_intervals(
         parent, root, mutations, times, dates, leaves, sigmas,
         clock_rate=RATE, include_rate_uncertainty=False)
-    widened, _, _, _ = uncertainty.node_date_intervals(
+    widened, _, _, _, _ = uncertainty.node_date_intervals(
         parent, root, mutations, times, dates, leaves, sigmas,
         clock_rate=RATE, include_rate_uncertainty=True)
     assert np.all(widened[identified] >= conditioned[identified] - 1e-12)
@@ -177,7 +178,7 @@ def test_an_internal_node_with_no_mutations_around_it_is_unidentified():
     dates = np.array([0.0, 40.0, 100.0, 100.0])
     leaves = np.array([2, 3])
     sigmas = np.array([3.0, 3.0])
-    sd, identified, lower, upper = uncertainty.node_date_intervals(
+    sd, identified, lower, upper, _ = uncertainty.node_date_intervals(
         parent, 0, mutations, times, dates, leaves, sigmas, clock_rate=RATE)
     assert identified[0] and identified[3]
     assert identified[2], "a dated tip is identified by its own date"

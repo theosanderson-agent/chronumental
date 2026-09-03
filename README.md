@@ -59,10 +59,15 @@ point estimate:
 
 These come from the curvature of the objective at the fitted point, which is
 tree-sparse when written in node dates, so they need no refitting and cost one
-more pass over the tree. The interval widens to include the clock rate's own
-uncertainty, which is what dominates deep nodes; pass
-`--confidence_conditions_on_clock_rate` to hold the rate fixed instead, or
-`--no_confidence_intervals` to skip the columns.
+more pass over the tree. Pass `--no_confidence_intervals` to skip the columns.
+
+They are conditional on the clock rate. The closed-form correction for the
+rate's own uncertainty is implemented, but on real trees its Schur complement
+comes out negative and it is refused — the run says so when that happens.
+Deep nodes are therefore narrower than they should be, since the root's date
+is roughly the oldest tip minus divergence over the rate. See
+`chronumental/uncertainty.py` for why the cheap route fails and what does
+work.
 
 Where a part of the tree carries no mutations there is nothing to date it
 with. Those nodes get a `bounded_by_tree_order` column set, and an interval
