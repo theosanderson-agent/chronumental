@@ -115,6 +115,18 @@ def get_parser():
                         help="Adam learning rate")
 
     parser.add_argument(
+        '--convergence_rate_tol',
+        default=0.002,
+        type=float,
+        help=
+        ("Relative change in the fitted clock rate below which it counts as "
+         "settled, for early stopping. Checked alongside "
+         "--convergence_tol_days because node dates can look stable while "
+         "the rate is still moving, and the dates are more sensitive to the "
+         "rate than a test on the dates alone can detect.")
+    )
+
+    parser.add_argument(
         '--convergence_tol_days',
         default=0.1,
         type=float,
@@ -510,6 +522,7 @@ def main():
             _make_convergence_check(path_sum))
     previous_node_days = None
     consecutive_converged = 0
+    previous_rate = None
     checks_done = 0
 
     # Run the fitting steps in chunks under jax.lax.scan rather than one at a
@@ -603,7 +616,27 @@ def main():
                         mean_abs_change_days = float(
                             convergence_mean_abs_change_fn(
                                 current_node_days, previous_node_days))
-                        if mean_abs_change_days < args.convergence_tol_days:
+                        # The dates settling is necessary but not
+                        # sufficient. They can look stable while the clock
+                        # rate is still descending, and the dates are far
+                        # more sensitive to the rate than this test is: on
+                        # the ebola example a 5% rate error moved the median
+                        # disagreement with treetime by 3 days. So require
+                        # the rate to have stopped moving too, as a relative
+                        # change, since its magnitude varies with the units
+                        # the tree is in.
+                        current_rate = float(
+                            my_model.get_mutation_rate(current_params))
+                        if previous_rate is None or previous_rate == 0:
+                            rate_settled = False
+                        else:
+                            rate_settled = (
+                                abs(current_rate - previous_rate) /
+                                abs(previous_rate) <
+                                args.convergence_rate_tol)
+                        previous_rate = current_rate
+                        if (mean_abs_change_days < args.convergence_tol_days
+                                and rate_settled):
                             consecutive_converged += 1
                         else:
                             consecutive_converged = 0
