@@ -130,6 +130,28 @@ def read_tree(tree_file):
     return tree
 
 
+def _period_midpoint(start, months=0, years=0):
+    """Centre an imprecise date in its interval, and give the interval width.
+
+    A date reported as 2020-06 is the whole of June, and 2020 is the whole of
+    2020; the value the model should aim at is the middle of that period, not
+    its first instant. The previous fixed offsets of 15 and 182 days were both
+    early -- June's midpoint is 15.5 days in, and a year's is 182.5 or 183 --
+    which biased every imprecise tip earlier than its own metadata implied.
+
+    Computing the period's real end also gets February and leap years right,
+    so the returned width is the actual number of days rather than a nominal
+    30 or 365.
+    """
+    if months:
+        end = (datetime.datetime(start.year + 1, 1, 1) if start.month == 12
+               else datetime.datetime(start.year, start.month + 1, 1))
+    else:
+        end = datetime.datetime(start.year + years, start.month, start.day)
+    span = end - start
+    return [start + span / 2, span.days]
+
+
 def get_datetime_and_error(x):
 
     try:
@@ -149,16 +171,12 @@ def get_datetime_and_error(x):
             pass
 
         try:
-            return [
-                datetime.datetime.strptime(x, '%Y-%m') +
-                datetime.timedelta(days=30 // 2), 30
-            ]
+            return _period_midpoint(
+                datetime.datetime.strptime(x, '%Y-%m'), months=1)
         except ValueError:
             try:
-                return [
-                    datetime.datetime.strptime(x, '%Y') +
-                    datetime.timedelta(days=365 // 2), 365
-                ]
+                return _period_midpoint(
+                    datetime.datetime.strptime(x, '%Y'), years=1)
             except ValueError:
                 if x != "" and x != "?":
                     print(
@@ -287,7 +305,7 @@ def estimate_initial_times(tree, name_to_pos, branch_distances_array,
     root date (in the same day-relative-to-reference units as
     target_dates).
     """
-    days_per_mutation_year = 365.0 / clock_rate
+    days_per_mutation_year = helpers.DAYS_PER_YEAR / clock_rate
 
     own_mutation_time = {}
     cumulative_mutation_time = {}
@@ -473,7 +491,7 @@ def estimate_clock_rate_phylogenetic(tree, name_to_position, branch_distances,
         raise ValueError(
             "Phylogenetic clock regression had insufficient positive "
             "temporal signal; use --clock or --clock_estimator theil-sen")
-    return 365.0 * numerator / denominator
+    return helpers.DAYS_PER_YEAR * numerator / denominator
 
 
 def get_parent_indices(tree, name_to_pos):

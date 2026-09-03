@@ -506,7 +506,7 @@ def main():
             x_fit, y_fit = x, y
         slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
             y_fit, x_fit)
-        theil_sen_rate = slope_per_day * 365
+        theil_sen_rate = slope_per_day * helpers.DAYS_PER_YEAR
         if args.clock_estimator == 'phylogenetic':
             phylogenetic_rate = input_mod.estimate_clock_rate_phylogenetic(
                 tree, name_to_pos, np.asarray(branch_distances_array),
@@ -804,7 +804,8 @@ def main():
             else:
                 node_name = node.label.replace("'", "")
             node.edge_length = branch_length_lookup[node_name] / (
-                365 if args.output_unit == "years" else 1)
+                helpers.DAYS_PER_YEAR
+                if args.output_unit == "years" else 1)
             if not node.parent:
                 # Written as zero for the same reason its cumulative time is
                 # zero: nothing above the root, so nothing for a branch to
