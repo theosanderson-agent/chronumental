@@ -97,32 +97,6 @@ def get_parser():
     )
 
     parser.add_argument(
-        '--initial_tau',
-        default=50.0,
-        type=float,
-        help=
-        "Fixed global horseshoe scale in days: the typical size, in days, of "
-        "the extra date error a tip's declared precision doesn't account "
-        "for. tau is a numpyro.param but the guide always substitutes this "
-        "value rather than learning it -- a point estimate of a HalfCauchy "
-        "scale, whose density is highest at zero, is unstable under a "
-        "point-mass guide. Only applies to --model HorseShoeLike."
-    )
-
-    parser.add_argument(
-        '--hs_scale',
-        default=0.3,
-        type=float,
-        help=
-        "HalfCauchy scale for the per-tip horseshoe local shrinkage "
-        "parameter (lambda). This is what actually gives the horseshoe its "
-        "shrinkage: it must be small enough to pull most tips' extra "
-        "variance to ~0, leaving only genuinely unexplained tips inflated. "
-        "The previous default (86917549.587) was so large the prior was "
-        "essentially flat, providing no shrinkage at all. Only applies to "
-        "--model HorseShoeLike.")
-
-    parser.add_argument(
         '--steps',
         default=20000,
         type=int,
@@ -194,6 +168,7 @@ def get_parser():
     parser.add_argument('--model',
                         default="DeltaGuideWithStrictLearntClock",
                         type=str,
+                        choices=sorted(models.models),
                         help="Model type to use")
 
     parser.add_argument(
@@ -483,10 +458,7 @@ def main():
         args.expected_min_between_transmissions,
         "quadrature_date_scale": not args.multiply_date_precision,
         "enforce_exact_clock": args.enforce_exact_clock,
-        "variance_on_clock_rate": args.variance_on_clock_rate,
-        "initial_tau": args.initial_tau,
-        "hs_scale": args.hs_scale,
-        "fixed_tau": True
+        "variance_on_clock_rate": args.variance_on_clock_rate
     }
 
     initial_branch_times_array = None
