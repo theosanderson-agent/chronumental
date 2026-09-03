@@ -109,6 +109,23 @@ def get_parser():
             "noiseless by the Gaussian contrast approximation."))
 
     parser.add_argument(
+        '--clock_filter_iqd',
+        default=0.0,
+        type=float,
+        help=(
+            "Discard the date of any tip whose root-to-tip divergence sits "
+            "more than this many interquartile ranges from the regression "
+            "line, before fitting. Those tips keep their place in the tree "
+            "and simply become undated. 0, the default, keeps every date. "
+            "4 is a reasonable value if you suspect swapped or mistyped "
+            "metadata: on datasets with a tight clock it identifies "
+            "genuinely wrong dates with high precision and recovers much of "
+            "the damage they do, but it finds only the worst of them -- two "
+            "sequences of similar divergence can swap dates and leave almost "
+            "no trace in this statistic -- so it is a mitigation rather than "
+            "a fix."))
+
+    parser.add_argument(
         '--variance_dates',
         default=3.0,
         type=float,
@@ -450,6 +467,33 @@ def main():
                                      root_index)
     terminal_indices = jnp.asarray(
         [name_to_pos[name] for name in terminal_names], dtype=jnp.int32)
+
+    if args.clock_filter_iqd > 0:
+        residuals = np.asarray(path_sum(branch_distances_array)[terminal_indices])
+        days = np.asarray(terminal_target_dates_array)
+        if len(days) >= 20:
+            slope, intercept = np.polyfit(days, residuals, 1)
+            offset = residuals - (slope * days + intercept)
+            q1, q3 = np.percentile(offset, [25, 75])
+            span = q3 - q1
+            middle = np.median(offset)
+            keep = np.abs(offset - middle) <= args.clock_filter_iqd * span
+            dropped = int((~keep).sum())
+            if dropped and dropped < len(days):
+                print(f"Clock filter: dropping the dates of {dropped} of "
+                      f"{len(days)} tips more than {args.clock_filter_iqd} "
+                      f"interquartile ranges off the root-to-tip line")
+                terminal_names = [n for n, k in zip(terminal_names, keep) if k]
+                terminal_target_dates_array = terminal_target_dates_array[keep]
+                terminal_target_errors_array = terminal_target_errors_array[keep]
+                terminal_name_to_pos = {x: i for i, x in enumerate(terminal_names)}
+                target_dates = {k: v for k, v in target_dates.items()
+                                if k in terminal_name_to_pos}
+                terminal_indices = jnp.asarray(
+                    [name_to_pos[name] for name in terminal_names],
+                    dtype=jnp.int32)
+            elif dropped:
+                print("Clock filter: would drop every tip; keeping all dates")
 
     if args.clock:
         print(f"Using clock rate {args.clock}")
