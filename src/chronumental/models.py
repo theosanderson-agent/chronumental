@@ -100,6 +100,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
             'clock_likelihood', 'poisson')
         self.branch_rate_cv_init = kwargs['model_configuration'].get(
             'branch_rate_cv_init', 0.3)
+        self.root_date_prior_scale = kwargs['model_configuration'].get(
+            'root_date_prior_scale', 36500.0)
         if self.branch_rate_cv_init <= 0:
             raise ValueError("branch_rate_cv_init must be positive")
 
@@ -131,8 +133,17 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         return all_node_dates[self.terminal_indices] + root_date
 
     def model(self):
-        root_date = numpyro.sample("root_date",
-                                   dist.Normal(loc=0.0, scale=1000.0))
+        # Cauchy, not Normal. root_date is measured in days before the
+        # oldest tip, so a Normal penalises a deep root quadratically: at
+        # the old scale of 1000 days this prior asserted the root lay within
+        # about three years of the oldest tip, which on a tree spanning
+        # centuries dominated everything else in the objective and dragged
+        # the root forward. A Cauchy's penalty grows logarithmically, so a
+        # tree far deeper than the scale costs a little rather than a lot,
+        # and the scale stops having to be guessed from the tree's depth.
+        root_date = numpyro.sample(
+            "root_date",
+            dist.Cauchy(loc=0.0, scale=self.root_date_prior_scale))
 
         branch_times = numpyro.sample(
             "latent_time_length",

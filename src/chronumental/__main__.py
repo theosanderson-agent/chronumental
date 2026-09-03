@@ -238,6 +238,16 @@ def get_parser():
               "drawn from a random distribution with a learnt variance."))
 
     parser.add_argument(
+        '--root_date_prior_scale_days',
+        default=36500.0,
+        type=float,
+        help=("Scale of the Cauchy prior on the root date, in days before "
+              "the oldest tip. Heavy-tailed, so this mainly sets where the "
+              "prior stops being flat rather than how far back the root may "
+              "go; the default of 100 years is uninformative for almost any "
+              "tree."))
+
+    parser.add_argument(
         '--clock_likelihood',
         choices=('poisson', 'gamma-poisson'),
         default='poisson',
@@ -533,6 +543,7 @@ def main():
             "variance_on_clock_rate": args.variance_on_clock_rate,
             "clock_likelihood": args.clock_likelihood,
             "branch_rate_cv_init": args.branch_rate_cv_init,
+            "root_date_prior_scale": args.root_date_prior_scale_days,
         }
 
         initial_branch_times_array = None
