@@ -578,7 +578,7 @@ def _tree_residuals(model, params, terminals, branch_distances_array,
     branch_times = np.asarray(model.get_branch_times(params))
     node_dates = np.asarray(path_sum(model.get_branch_times(params))) + float(
         params['root_date_mu'])
-    sd, _identified, _lower, _upper = uncertainty.node_date_intervals(
+    sd = uncertainty.node_date_intervals(
         parent_indices=np.asarray(parent_indices),
         root_index=root_index,
         mutations_per_branch=np.asarray(branch_distances_array),
