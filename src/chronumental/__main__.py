@@ -19,6 +19,7 @@ import numpyro.optim as optim
 from numpyro.infer import SVI, Trace_ELBO
 from numpyro.infer.autoguide import AutoDelta
 from . import models
+from . import uncertainty
 from scipy import stats
 
 try:
@@ -124,6 +125,26 @@ def get_parser():
             "sequences of similar divergence can swap dates and leave almost "
             "no trace in this statistic -- so it is a mitigation rather than "
             "a fix."))
+
+    parser.add_argument(
+        '--no_confidence_intervals',
+        action='store_true',
+        help=(
+            "Skip the confidence intervals on node dates. They are computed "
+            "by default: the curvature of the objective at the fitted point "
+            "is tree-sparse when written in node dates, so the intervals "
+            "cost one more pass over the tree and no refitting. See "
+            "chronumental.uncertainty."))
+
+    parser.add_argument(
+        '--confidence_conditions_on_clock_rate',
+        action='store_true',
+        help=(
+            "Report intervals that hold the clock rate at its fitted value "
+            "rather than propagating the rate's own uncertainty. The root's "
+            "date is roughly the oldest tip minus divergence over the rate, "
+            "so conditioning makes deep intervals much too narrow; this is "
+            "here for comparison rather than for use."))
 
     parser.add_argument(
         '--variance_dates',
@@ -369,6 +390,80 @@ def prepend_to_file_name(full_path, to_prepend):
         return f"{path}/{to_prepend}_{file}"
     else:
         return f"{to_prepend}_{full_path}"
+
+
+def _days_to_dates(origin_date, days):
+    """Calendar dates for day offsets, clamped to what datetime can hold.
+
+    An unidentified node's bound can be arbitrarily far away, and a date
+    thousands of years out of range should come back as the end of the
+    representable range rather than crash the whole run at the last step.
+    """
+    # The origin can arrive as a pandas Timestamp or a plain datetime
+    # depending on how the metadata parsed, and the two disagree about what
+    # years they can represent, so bound against the plain calendar and let
+    # anything the origin's own type still rejects come back empty.
+    plain = origin_date.date() if hasattr(origin_date, "date") else origin_date
+    low = (datetime.date.min - plain).days + 1
+    high = (datetime.date.max - plain).days - 1
+    out = []
+    for day in days:
+        if not np.isfinite(day):
+            out.append(None)
+            continue
+        try:
+            out.append(origin_date +
+                       datetime.timedelta(days=float(min(max(day, low),
+                                                         high))))
+        except (OverflowError, ValueError):
+            out.append(None)
+    return out
+
+
+def _confidence_columns(args, my_model, params, path_sum, parent_indices,
+                        root_index, branch_distances_array, terminal_indices,
+                        name_to_pos, names, origin_date):
+    """The interval columns for the dates file, or none if they cannot be had.
+
+    A failure here must not cost someone the fit they just waited for, so the
+    dates are still written -- with a warning saying what was lost, rather
+    than silently.
+    """
+    try:
+        branch_times = np.asarray(my_model.get_branch_times(params))
+        node_days = np.asarray(path_sum(jnp.asarray(branch_times))) + float(
+            params['root_date_mu'])
+        sd, identified, lower, upper = uncertainty.node_date_intervals(
+            parent_indices=np.asarray(parent_indices),
+            root_index=root_index,
+            mutations_per_branch=np.asarray(branch_distances_array),
+            branch_times=branch_times,
+            node_dates=node_days,
+            terminal_indices=np.asarray(terminal_indices),
+            terminal_sigmas=np.asarray(my_model.get_date_sigmas()),
+            clock_rate=float(my_model.get_mutation_rate(params)),
+            include_rate_uncertainty=(
+                not args.confidence_conditions_on_clock_rate))
+    except Exception as exception:  # noqa: BLE001 - reported, not swallowed
+        print(f"Could not compute confidence intervals ({exception}); "
+              f"writing dates without them.")
+        return {}
+
+    positions = np.array([name_to_pos[name] for name in names])
+    unresolved = int((~identified).sum())
+    if unresolved:
+        print(f"{unresolved} of {len(identified)} nodes sit in parts of the "
+              f"tree with no mutations to date them. Their dates are bounded "
+              f"by their neighbours rather than estimated, and are marked in "
+              f"the bounded_by_tree_order column.")
+    columns = {
+        "lower_95": _days_to_dates(origin_date, lower[positions]),
+        "upper_95": _days_to_dates(origin_date, upper[positions]),
+        "date_sd_days": sd[positions],
+    }
+    if unresolved:
+        columns["bounded_by_tree_order"] = ~identified[positions]
+    return columns
 
 
 def main():
@@ -877,7 +972,16 @@ def main():
         }
 
         names, values = zip(*output_dates.items())
-        output_meta = pd.DataFrame({"strain": names, "predicted_date": values})
+        columns = {"strain": list(names), "predicted_date": list(values)}
+
+        if not args.no_confidence_intervals:
+            columns.update(
+                _confidence_columns(args, my_model, params, path_sum,
+                                    parent_indices, root_index,
+                                    branch_distances_array, terminal_indices,
+                                    name_to_pos, names, origin_date))
+
+        output_meta = pd.DataFrame(columns)
 
         output_meta.to_csv(args.dates_out, sep="\t", index=False)
         print(f"Wrote predicted dates to {args.dates_out}")

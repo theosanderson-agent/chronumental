@@ -48,6 +48,28 @@ wget https://hgwdev.gi.ucsc.edu/~angie/UShER_SARS-CoV-2/2021/10/06/public-2021-1
 chronumental --tree public-2021-10-06.all.nwk.gz --dates public-2021-10-06.metadata.tsv.gz --steps 100
 ```
 
+#### Confidence intervals
+
+The dates file carries a 95% interval on every node's date, alongside the
+point estimate:
+
+| strain | predicted_date | lower_95 | upper_95 | date_sd_days |
+|---|---|---|---|---|
+| NODE_0000001 | 2013-12-27 | 2013-10-07 | 2014-03-18 | 41.3 |
+
+These come from the curvature of the objective at the fitted point, which is
+tree-sparse when written in node dates, so they need no refitting and cost one
+more pass over the tree. The interval widens to include the clock rate's own
+uncertainty, which is what dominates deep nodes; pass
+`--confidence_conditions_on_clock_rate` to hold the rate fixed instead, or
+`--no_confidence_intervals` to skip the columns.
+
+Where a part of the tree carries no mutations there is nothing to date it
+with. Those nodes get a `bounded_by_tree_order` column set, and an interval
+that says only what their neighbours require rather than a standard error.
+Against simulated data with known internal dates the intervals are somewhat
+conservative — see `chronumental/uncertainty.py` for the numbers.
+
 📚 Please [visit our documentation page](https://chronumental.readthedocs.io/en/latest/) to learn more about the parameters you can use to control Chronumental.
 
 ### Integrations

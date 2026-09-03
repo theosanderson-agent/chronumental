@@ -53,6 +53,14 @@ class ChronumentalModelBase(object):
         window = self.terminal_target_errors_array / 2.0
         return jnp.sqrt(self.variance_dates**2 + window**2)
 
+    def get_date_sigmas(self):
+        """Standard deviation of each tip's date likelihood, in days.
+
+        The same quantity the fit uses, exposed because the confidence
+        intervals need it: it is the whole of the tip term's curvature.
+        """
+        return self._date_scale()
+
     def get_logging_results(self, params):
         results = collections.OrderedDict()
         times = self.get_branch_times(params)
