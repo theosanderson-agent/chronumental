@@ -105,6 +105,8 @@ depth 5025. The work is linear in the tree but the sweeps step one level at a
 time from Python, so it is the tree's depth rather than its size that shows
 up. Real trees here are shallow -- 34 for ebola, 69 for measles/genome.
 """
+import math
+
 import numpy as np
 
 from . import helpers
@@ -373,3 +375,53 @@ def _ordering_bracket(parent, dates, identified, levels, lower, upper):
     hi = np.where(np.isfinite(hi), hi, dates[unidentified])
     lo = np.where(np.isfinite(lo), lo, dates[unidentified])
     return lo, np.maximum(hi, lo)
+
+
+def profile_interval(grid, losses, roots, initial_rate):
+    """Peak, interval and root interval from a profiled likelihood.
+
+    `grid` is the rates that were fitted, `losses` the negative log posterior
+    each fit reached, `roots` the root date each fit chose. The interval comes
+    from the curvature of a quadratic through the three points around the
+    best, which is the standard profile-likelihood interval, and it is the one
+    route to a rate interval that works here -- the closed form above is a
+    small difference of large numbers and comes out negative on real trees.
+
+    The root's interval is a lookup rather than a further approximation, since
+    every grid point fitted its own root. It covers the rate's uncertainty and
+    nothing else.
+    """
+    log_likelihood = -losses
+    log_rate = np.log(grid)
+    best = int(np.argmax(log_likelihood))
+    window = slice(max(best - 1, 0), min(best + 2, len(grid)))
+    if window.stop - window.start < 3:
+        window = slice(0, 3)
+    quadratic = np.polyfit(log_rate[window], log_likelihood[window], 2)
+    curvature = -2 * quadratic[0]
+    # A likelihood that only rises across the whole grid fits a near-straight
+    # line, whose vertex is at plus or minus infinity. Test the vertex in log
+    # space, where that is a large number rather than an overflow.
+    if not np.isfinite(curvature) or curvature <= 0:
+        return initial_rate, None
+    log_peak = -quadratic[1] / (2 * quadratic[0])
+    if not np.isfinite(log_peak) or not (log_rate[0] <= log_peak
+                                         <= log_rate[-1]):
+        return initial_rate, None
+    peak = float(np.exp(log_peak))
+    standard_error = float(1.0 / math.sqrt(curvature))
+    low = float(peak * math.exp(-1.96 * standard_error))
+    high = float(peak * math.exp(1.96 * standard_error))
+    # The root moves with the rate, and each grid point already fitted one, so
+    # its interval is a lookup rather than a further approximation.
+    root_low = float(np.interp(math.log(high), log_rate, roots))
+    root_high = float(np.interp(math.log(low), log_rate, roots))
+    root_at_peak = float(np.interp(log_peak, log_rate, roots))
+    return peak, {
+        "grid": grid, "losses": losses, "roots": roots, "rate": peak,
+        "rate_low": low, "rate_high": high,
+        "standard_error_log_rate": standard_error,
+        "root": root_at_peak, "root_low": min(root_low, root_high),
+        "root_high": max(root_low, root_high),
+    }
+

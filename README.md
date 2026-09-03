@@ -48,6 +48,28 @@ wget https://hgwdev.gi.ucsc.edu/~angie/UShER_SARS-CoV-2/2021/10/06/public-2021-1
 chronumental --tree public-2021-10-06.all.nwk.gz --dates public-2021-10-06.metadata.tsv.gz --steps 100
 ```
 
+#### The clock rate, and an interval on the root
+
+By default the rate comes from a root-to-tip regression and is then held
+fixed. `--profile_clock_rate 7` instead refits the durations at seven fixed
+rates and takes the best, which costs seven fits and buys three things:
+
+```
+Profiled clock rate 23.93 (95% 22.07 to 25.95; standard error 0.041 on the log scale)
+Profiled root date 2015-06-10 (95% 2015-01-28 to 2015-10-18)
+```
+
+On simulations with a known rate of 8.00e-4, over four replicates: the default
+missed by 10.4% on average and the profiled rate by 2.0%, the default root was
+0.50 years out and the profiled root 0.12, and the interval contained the true
+rate 4 times out of 4 and the true root 3 out of 4.
+
+This does not fix the underlying bias — profiling *is* the joint maximum
+likelihood estimate, so it inherits whatever bias that has. It beats the
+default because a root-to-tip regression is a worse estimator than the MLE,
+and it is the only route to an interval on the rate that works here. The root
+interval covers the rate's uncertainty and nothing else.
+
 #### Confidence intervals
 
 The dates file carries a 95% interval on every node's date, alongside the

@@ -234,3 +234,31 @@ def test_saturation_is_reported_only_when_the_genome_length_is_known():
     # Without a genome length the units are unknown, so it is skipped rather
     # than guessed at.
     assert diagnostics.report(divergence, days, genome_length=None) == []
+
+
+def test_the_profile_peak_and_interval_come_from_the_curvature():
+    """A quadratic log-likelihood should give back its own peak and width."""
+    summary = uncertainty.profile_interval
+    peak, curvature = 0.001, 800.0
+    grid = peak * np.exp(np.linspace(-0.15, 0.15, 9))
+    # losses are the negative log likelihood, so a parabola opening upwards
+    losses = 0.5 * curvature * (np.log(grid) - np.log(peak))**2
+    roots = -1000.0 + 5e5 * (grid - peak)   # the root moves with the rate
+    rate, profile = summary(grid, losses, roots, initial_rate=peak)
+    assert abs(rate / peak - 1) < 1e-6
+    assert abs(profile["standard_error_log_rate"] - 1 / np.sqrt(curvature)) < 1e-6
+    assert profile["rate_low"] < peak < profile["rate_high"]
+    # The root interval is read off the same grid, so it must bracket the
+    # root at the peak and must not be inverted.
+    assert profile["root_low"] <= profile["root"] <= profile["root_high"]
+
+
+def test_a_profile_with_no_maximum_keeps_the_starting_rate():
+    """A monotone likelihood has no peak to report, so nothing is claimed."""
+    summary = uncertainty.profile_interval
+    grid = 0.001 * np.exp(np.linspace(-0.15, 0.15, 9))
+    losses = -1000.0 * np.log(grid)          # falls forever; no interior peak
+    roots = np.zeros_like(grid)
+    rate, profile = summary(grid, losses, roots, initial_rate=0.001)
+    assert rate == 0.001
+    assert profile is None
