@@ -204,6 +204,17 @@ def get_parser():
         default="days")
 
     parser.add_argument(
+        '--multiply_date_precision',
+        action='store_true',
+        help=
+        "Restore the old date-likelihood scale, --variance_dates multiplied "
+        "by each tip's precision window, rather than the two combined in "
+        "quadrature. Multiplying conflates the width of the reported interval "
+        "with how far a reported date can be from the truth for other "
+        "reasons, so raising one inflates the other: at the default it made a "
+        "year-only date uncertain to within ten years.")
+
+    parser.add_argument(
         '--variance_on_clock_rate',
         action='store_true',
         help=("Will cause the clock rate to be "
@@ -475,6 +486,7 @@ def main():
         "variance_dates": args.variance_dates,
         "expected_min_between_transmissions":
         args.expected_min_between_transmissions,
+        "quadrature_date_scale": not args.multiply_date_precision,
         "enforce_exact_clock": args.enforce_exact_clock,
         "variance_on_clock_rate": args.variance_on_clock_rate,
         "initial_tau": args.initial_tau,
