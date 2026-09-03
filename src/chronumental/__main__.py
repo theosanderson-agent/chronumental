@@ -312,19 +312,6 @@ def get_parser():
         "Will force the model to always use the final parameters, rather than simply using those that gave the lowest loss"
     )
 
-    parser.add_argument(
-        '--no_tip_date_init',
-        action='store_true',
-        help=
-        ("Initialise branch times and the root date from mutation counts and "
-         "the clock rate alone, instead of from an estimate that also uses "
-         "the tip dates. The tip-date-informed start is the default because "
-         "it measured better on everything tried: mean absolute error on "
-         "internal node dates over five simulated replicates falls from 16.2 "
-         "to 14.9 days, and on a real dataset the median disagreement with "
-         "treetime falls from 12.1 to 11.3.")
-    )
-
     return parser
 
 
@@ -557,16 +544,6 @@ def main():
             "root_date_prior_scale": args.root_date_prior_scale_days,
         }
 
-        initial_branch_times_array = None
-        initial_root_date = None
-        if not args.no_tip_date_init:
-            branch_time_init, initial_root_date = (
-                input_mod.estimate_initial_times(
-                    tree, name_to_pos, branch_distances_array, target_dates,
-                    candidate_rate))
-            initial_branch_times_array = jnp.asarray(
-                [branch_time_init[x] for x in names_init])
-
         return models.DeltaGuideWithStrictLearntClock(
             path_sum=path_sum,
             terminal_indices=terminal_indices,
@@ -575,13 +552,8 @@ def main():
             terminal_target_errors_array=terminal_target_errors_array,
             ref_point_distance=ref_point_distance,
             model_configuration=model_configuration,
-            terminal_names=terminal_names,
-            initial_branch_times_array=initial_branch_times_array,
-            initial_root_date=initial_root_date)
+            terminal_names=terminal_names)
 
-    if not args.no_tip_date_init:
-        print("Estimating initial branch times and root date from the tree and "
-              "tip dates")
     candidate_models = [(name, build_model(rate))
                         for name, rate in clock_candidates]
 
