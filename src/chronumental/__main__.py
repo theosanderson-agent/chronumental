@@ -207,12 +207,6 @@ def get_parser():
         action='store_true',
         help="Only use full dates, given to the precision of a day")
 
-    parser.add_argument('--model',
-                        default="DeltaGuideWithStrictLearntClock",
-                        type=str,
-                        choices=sorted(models.models),
-                        help="Model type to use")
-
     parser.add_argument(
         '--output_unit',
         type=str,
@@ -279,15 +273,6 @@ def get_parser():
             "duration per branch alongside a single shared rate is the "
             "classic incidental-parameters problem, and the free fit landed "
             "below the reference rate on 18 of 24 real datasets."))
-
-    parser.add_argument(
-        '--enforce_exact_clock',
-        action='store_true',
-        help=(
-            "Hold the clock rate fixed rather than fitting it. This is now "
-            "the default, so the flag is only needed to override an earlier "
-            "--floating_clock_rate. With --clock the rate is held at that "
-            "value; without it, at whatever --clock_estimator produced."))
 
     parser.add_argument(
         '--use_gpu',
@@ -553,10 +538,6 @@ def main():
     # durations are incidental parameters that grow with the tree -- and on
     # real data the free fit landed below the reference rate on 18 of 24
     # datasets, costing 10% in median accuracy against published time trees.
-    if args.enforce_exact_clock and args.floating_clock_rate:
-        raise ValueError(
-            "--enforce_exact_clock and --floating_clock_rate are opposites; "
-            "pass at most one. The clock rate is fixed by default.")
     if args.variance_on_clock_rate and not args.floating_clock_rate:
         raise ValueError(
             "--variance_on_clock_rate needs a rate to put variance on, so it "
@@ -569,7 +550,7 @@ def main():
             "variance_dates": args.variance_dates,
             "expected_min_between_transmissions": args.expected_min_between_transmissions,
             "quadrature_date_scale": not args.multiply_date_precision,
-            "enforce_exact_clock": fix_clock_rate,
+            "fix_clock_rate": fix_clock_rate,
             "variance_on_clock_rate": args.variance_on_clock_rate,
             "clock_likelihood": args.clock_likelihood,
             "branch_rate_cv_init": args.branch_rate_cv_init,
@@ -586,7 +567,7 @@ def main():
             initial_branch_times_array = jnp.asarray(
                 [branch_time_init[x] for x in names_init])
 
-        return models.models[args.model](
+        return models.DeltaGuideWithStrictLearntClock(
             path_sum=path_sum,
             terminal_indices=terminal_indices,
             branch_distances_array=branch_distances_array,

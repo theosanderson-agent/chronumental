@@ -89,8 +89,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         self.clock_rate = kwargs['model_configuration']["clock_rate"]
 
         self.variance_dates = kwargs['model_configuration']['variance_dates']
-        self.enforce_exact_clock = kwargs['model_configuration'][
-            'enforce_exact_clock']
+        self.fix_clock_rate = kwargs['model_configuration'][
+            'fix_clock_rate']
         self.variance_on_clock_rate = kwargs['model_configuration'][
             'variance_on_clock_rate']
         self.expected_min_between_transmissions = kwargs[
@@ -154,7 +154,7 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
                 high=onp.ones(self.branch_distances_array.shape[0]) * 365 *
                 10000))
 
-        if self.enforce_exact_clock:
+        if self.fix_clock_rate:
             mutation_rate = self.clock_rate
         else:
             mutation_rate = numpyro.sample(
@@ -206,7 +206,7 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         # self.clock_rate and never samples it, so the guide must not declare
         # a latent site for it either -- numpyro warns about guide sites the
         # model does not use.
-        if self.enforce_exact_clock:
+        if self.fix_clock_rate:
             return
 
         mutation_rate_mu = numpyro.param("mutation_rate_mu",
@@ -231,7 +231,7 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         return params['time_length_mu']
 
     def get_mutation_rate(self, params):
-        if self.enforce_exact_clock:
+        if self.fix_clock_rate:
             return self.clock_rate
         return params['mutation_rate_mu']
 
