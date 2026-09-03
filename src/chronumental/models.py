@@ -199,6 +199,16 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
                                        self.initial_time,
                                        constraint=dist.constraints.positive)
 
+        branch_times = numpyro.sample("latent_time_length",
+                                      dist.Delta(time_length_mu))
+
+        # With the rate held fixed the model reads it straight off
+        # self.clock_rate and never samples it, so the guide must not declare
+        # a latent site for it either -- numpyro warns about guide sites the
+        # model does not use.
+        if self.enforce_exact_clock:
+            return
+
         mutation_rate_mu = numpyro.param("mutation_rate_mu",
                                          self.clock_rate,
                                          constraint=dist.constraints.positive)
@@ -206,9 +216,6 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
             "mutation_rate_sigma",
             self.clock_rate,
             constraint=dist.constraints.positive)
-
-        branch_times = numpyro.sample("latent_time_length",
-                                      dist.Delta(time_length_mu))
 
         if not self.variance_on_clock_rate:
             mutation_rate = numpyro.sample("latent_mutation_rate",
