@@ -96,12 +96,20 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
             'model_configuration']['expected_min_between_transmissions']
         self.quadrature_date_scale = kwargs['model_configuration'].get(
             'quadrature_date_scale', True)
+        self.clock_likelihood = kwargs['model_configuration'].get(
+            'clock_likelihood', 'poisson')
+        self.branch_rate_cv_init = kwargs['model_configuration'].get(
+            'branch_rate_cv_init', 0.3)
+        if self.branch_rate_cv_init <= 0:
+            raise ValueError("branch_rate_cv_init must be positive")
 
         super().__init__(**kwargs)
 
     def get_logging_results(self, params):
         results = super().get_logging_results(params)
         results['mutation_rate'] = self.get_mutation_rate(params)
+        if self.clock_likelihood == 'gamma-poisson':
+            results['branch_rate_cv'] = params['branch_rate_cv']
         return results
 
     def set_initial_time(self):
@@ -140,10 +148,25 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
                 f"latent_mutation_rate",
                 dist.Uniform(low=0.0, high=self.clock_rate * 1000.0))
 
-        branch_distances = numpyro.sample("branch_distances",
-                                          dist.Poisson(mutation_rate *
-                                                       branch_times / 365),
-                                          obs=self.branch_distances_array)
+        expected_mutations = mutation_rate * branch_times / 365
+        if self.clock_likelihood == 'gamma-poisson':
+            # If a branch rate is Gamma distributed with mean mutation_rate
+            # and coefficient of variation cv, integrating that rate out of
+            # the Poisson count likelihood gives NegativeBinomial2 with
+            # concentration 1 / cv^2. This adds one scalar parameter rather
+            # than one latent rate per branch.
+            branch_rate_cv = numpyro.param(
+                "branch_rate_cv", self.branch_rate_cv_init,
+                constraint=dist.constraints.positive)
+            branch_distances_distribution = dist.NegativeBinomial2(
+                mean=expected_mutations,
+                concentration=1.0 / branch_rate_cv**2)
+        else:
+            branch_distances_distribution = dist.Poisson(expected_mutations)
+
+        branch_distances = numpyro.sample(
+            "branch_distances", branch_distances_distribution,
+            obs=self.branch_distances_array)
 
         calced_dates = self.calc_dates(branch_times, root_date)
 

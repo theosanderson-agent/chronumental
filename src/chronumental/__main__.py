@@ -82,6 +82,29 @@ def get_parser():
         type=float)
 
     parser.add_argument(
+        '--clock_estimator',
+        choices=('theil-sen', 'phylogenetic', 'objective-selected'),
+        default='theil-sen',
+        help=(
+            "Estimator used for the starting clock when --clock is omitted. "
+            "The default is the existing robust root-to-tip Theil-Sen "
+            "regression. 'phylogenetic' uses independent contrasts so tips "
+            "that share ancestry are not treated as independent; it is "
+            "experimental and can be less robust under a relaxed clock. "
+            "'objective-selected' tries one optimization step from each "
+            "initialization and continues from whichever has lower loss."))
+
+    parser.add_argument(
+        '--phylogenetic_clock_variance_floor',
+        default=5.0,
+        type=float,
+        help=(
+            "Minimum per-branch mutation variance used by "
+            "--clock_estimator phylogenetic. The default prevents branches "
+            "with very few observed mutations from being treated as nearly "
+            "noiseless by the Gaussian contrast approximation."))
+
+    parser.add_argument(
         '--variance_dates',
         default=10.0,
         type=float,
@@ -135,7 +158,7 @@ def get_parser():
          "convergence checks falls below this many days. The old default of 1 "
          "day stopped too early: the node dates had settled but the clock "
          "rate was still moving, and the rate is what the dates are most "
-         "sensitive to. On the ebola example a 5%% error in the fitted rate "
+         "sensitive to. On one real dataset a 5%% error in the fitted rate "
          "cost 3 days of median disagreement with treetime, and tightening "
          "this from 1 to 0.1 took that disagreement from 11.3 days to 8.1. "
          "Simulated benchmarks improve too, from 14.9 to 14.1 days mean "
@@ -211,6 +234,25 @@ def get_parser():
               "drawn from a random distribution with a learnt variance."))
 
     parser.add_argument(
+        '--clock_likelihood',
+        choices=('poisson', 'gamma-poisson'),
+        default='poisson',
+        help=(
+            "Mutation-count likelihood. The default Poisson is a strict "
+            "clock. 'gamma-poisson' marginalizes independent Gamma-distributed "
+            "branch rates, producing a negative-binomial likelihood with a "
+            "single learned branch-rate coefficient of variation."))
+
+    parser.add_argument(
+        '--branch_rate_cv_init',
+        default=0.3,
+        type=float,
+        help=(
+            "Starting coefficient of variation for branch rates under "
+            "--clock_likelihood gamma-poisson. This is optimized during the "
+            "fit, not held fixed."))
+
+    parser.add_argument(
         '--enforce_exact_clock',
         action='store_true',
         help=("Will cause the clock rate to be exactly"
@@ -263,7 +305,7 @@ def get_parser():
          "the tip dates. The tip-date-informed start is the default because "
          "it measured better on everything tried: mean absolute error on "
          "internal node dates over five simulated replicates falls from 16.2 "
-         "to 14.9 days, and on the ebola example the median disagreement with "
+         "to 14.9 days, and on a real dataset the median disagreement with "
          "treetime falls from 12.1 to 11.3.")
     )
 
@@ -416,6 +458,7 @@ def main():
         clock_rate = args.clock
         if args.treat_mutation_units_as_normalised_to_genome_size:
             clock_rate = clock_rate * args.treat_mutation_units_as_normalised_to_genome_size
+        clock_candidates = [('provided', clock_rate)]
     else:
         root_to_tip = path_sum(branch_distances_array)[terminal_indices]
 
@@ -452,58 +495,106 @@ def main():
             x_fit, y_fit = x, y
         slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
             y_fit, x_fit)
-        slope_per_year = slope_per_day * 365
+        theil_sen_rate = slope_per_day * 365
+        if args.clock_estimator in ('phylogenetic', 'objective-selected'):
+            phylogenetic_rate = input_mod.estimate_clock_rate_phylogenetic(
+                tree, name_to_pos, np.asarray(branch_distances_array),
+                np.asarray(terminal_indices),
+                np.asarray(terminal_target_dates_array),
+                np.asarray(terminal_target_errors_array),
+                variance_floor=args.phylogenetic_clock_variance_floor)
 
-        print(f"Root to tip regression: got rate of: {slope_per_year}")
-        clock_rate = slope_per_year
-        if clock_rate < 0:
+        if args.clock_estimator == 'phylogenetic':
+            clock_candidates = [('phylogenetic', phylogenetic_rate)]
+        elif args.clock_estimator == 'objective-selected':
+            clock_candidates = [('theil-sen', theil_sen_rate),
+                                ('phylogenetic', phylogenetic_rate)]
+        else:
+            clock_candidates = [('theil-sen', theil_sen_rate)]
+
+        for candidate_name, candidate_rate in clock_candidates:
+            print(f"{candidate_name} clock regression: got rate of: "
+                  f"{candidate_rate}")
+        if any(rate <= 0 for _, rate in clock_candidates):
             raise ValueError(
                 "ERROR: Root-to-tip regression predicted a negative mutation rate. If your dataset is correct you will need to manually specify an initial clock rate with --clock."
             )
 
-    if clock_rate < 1 and not args.treat_mutation_units_as_normalised_to_genome_size:
+    if (any(rate < 1 for _, rate in clock_candidates)
+            and not args.treat_mutation_units_as_normalised_to_genome_size):
         raise ValueError(
             "Clock rate is less than 1 mutation per year. This probably means you need to specify a genome_size with --treat_mutation_units_as_normalised_to_genome_size size. If you are sure that you do not, set that parameter to 1.0."
         )
 
-    model_configuration = {
-        "clock_rate": clock_rate,
-        "variance_dates": args.variance_dates,
-        "expected_min_between_transmissions":
-        args.expected_min_between_transmissions,
-        "quadrature_date_scale": not args.multiply_date_precision,
-        "enforce_exact_clock": args.enforce_exact_clock,
-        "variance_on_clock_rate": args.variance_on_clock_rate
-    }
+    def build_model(candidate_rate):
+        model_configuration = {
+            "clock_rate": candidate_rate,
+            "variance_dates": args.variance_dates,
+            "expected_min_between_transmissions": args.expected_min_between_transmissions,
+            "quadrature_date_scale": not args.multiply_date_precision,
+            "enforce_exact_clock": args.enforce_exact_clock,
+            "variance_on_clock_rate": args.variance_on_clock_rate,
+            "clock_likelihood": args.clock_likelihood,
+            "branch_rate_cv_init": args.branch_rate_cv_init,
+        }
 
-    initial_branch_times_array = None
-    initial_root_date = None
+        initial_branch_times_array = None
+        initial_root_date = None
+        if not args.no_tip_date_init:
+            branch_time_init, initial_root_date = (
+                input_mod.estimate_initial_times(
+                    tree, name_to_pos, branch_distances_array, target_dates,
+                    candidate_rate))
+            initial_branch_times_array = jnp.asarray(
+                [branch_time_init[x] for x in names_init])
+
+        return models.models[args.model](
+            path_sum=path_sum,
+            terminal_indices=terminal_indices,
+            branch_distances_array=branch_distances_array,
+            terminal_target_dates_array=terminal_target_dates_array,
+            terminal_target_errors_array=terminal_target_errors_array,
+            ref_point_distance=ref_point_distance,
+            model_configuration=model_configuration,
+            terminal_names=terminal_names,
+            initial_branch_times_array=initial_branch_times_array,
+            initial_root_date=initial_root_date)
+
     if not args.no_tip_date_init:
-        print(
-            "Estimating initial branch times and root date from the tree and tip dates"
-        )
-        branch_time_init, initial_root_date = input_mod.estimate_initial_times(
-            tree, name_to_pos, branch_distances_array, target_dates,
-            clock_rate)
-        initial_branch_times_array = jnp.asarray(
-            [branch_time_init[x] for x in names_init])
-
-    my_model = models.models[args.model](
-        path_sum=path_sum,
-        terminal_indices=terminal_indices,
-        branch_distances_array=branch_distances_array,
-        terminal_target_dates_array=terminal_target_dates_array,
-        terminal_target_errors_array=terminal_target_errors_array,
-        ref_point_distance=ref_point_distance,
-        model_configuration=model_configuration,
-        terminal_names=terminal_names,
-        initial_branch_times_array=initial_branch_times_array,
-        initial_root_date=initial_root_date)
+        print("Estimating initial branch times and root date from the tree and "
+              "tip dates")
+    candidate_models = [(name, build_model(rate))
+                        for name, rate in clock_candidates]
 
     print("Performing SVI:")
     num_steps = args.steps
     optimiser = optim.ClippedAdam(
         args.lr) if args.clipped_adam else optim.Adam(args.lr)
+
+    if len(candidate_models) > 1:
+        pilot_results = []
+        for candidate_name, candidate_model in candidate_models:
+            pilot_svi = SVI(candidate_model.model, candidate_model.guide,
+                            optimiser, Trace_ELBO())
+            pilot_state = pilot_svi.init(jax.random.PRNGKey(0))
+            _, pilot_loss = pilot_svi.update(pilot_state)
+            pilot_loss = float(pilot_loss)
+            # Each starting estimate historically also set the upper bound of
+            # a very broad Uniform clock prior. Its log-normalising constant
+            # differs by log(starting rate), despite having no effect on the
+            # fitted parameters this far from the bound. Remove that constant
+            # so the pilot compares the same objective rather than favoring a
+            # numerically smaller prior range.
+            comparable_loss = pilot_loss - math.log(candidate_model.clock_rate)
+            pilot_results.append((comparable_loss, candidate_name,
+                                  candidate_model))
+            print(f"Initial {candidate_name} loss: {pilot_loss:.4f} "
+                  f"(comparable: {comparable_loss:.4f})")
+        _, selected_name, my_model = min(pilot_results, key=lambda item: item[0])
+        print(f"Selected {selected_name} initialization by lower loss")
+    else:
+        _, my_model = candidate_models[0]
+
     svi = SVI(my_model.model, my_model.guide, optimiser, Trace_ELBO())
     state = svi.init(jax.random.PRNGKey(0))
 
@@ -620,7 +711,7 @@ def main():
                         # sufficient. They can look stable while the clock
                         # rate is still descending, and the dates are far
                         # more sensitive to the rate than this test is: on
-                        # the ebola example a 5% rate error moved the median
+                        # one real dataset a 5% rate error moved the median
                         # disagreement with treetime by 3 days. So require
                         # the rate to have stopped moving too, as a relative
                         # change, since its magnitude varies with the units
