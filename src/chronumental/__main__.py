@@ -138,7 +138,10 @@ def get_parser():
             "reasonable value. On simulations with a known rate this halved "
             "the error in the rate, and it is the only route that yields a "
             "confidence interval on the rate, and hence on the root date. "
-            "0, the default, is off."))
+            "0, the default, is off. Turning this on also tightens "
+            "--convergence_tol_days for the whole run, because comparing the "
+            "losses of separate fits needs them converged more closely than "
+            "reporting their dates does."))
 
     parser.add_argument(
         '--profile_clock_range',
@@ -438,6 +441,11 @@ def prepend_to_file_name(full_path, to_prepend):
         return f"{to_prepend}_{full_path}"
 
 
+# Node dates must have settled to within this many days before a fit counts
+# as converged for profiling. See _profile_clock_rate for how it was chosen.
+PROFILE_CONVERGENCE_TOL_DAYS = 0.01
+
+
 TerminalState = collections.namedtuple(
     "TerminalState", "names indices dates errors target_dates")
 
@@ -630,12 +638,15 @@ def _profile_clock_rate(args, run_fit, build_model, initial_rate, terminals):
 
     What it does do is beat what chronumental does today, for two reasons
     that have nothing to do with the bias. First, the default pins the rate at
-    a root-to-tip regression, which is a worse estimator than the MLE: on
-    simulations with a known rate of 8.00e-4, the default read 7.20e-4 (-9.9%)
-    and the profile maximum 8.38e-4 (+4.8%). Second, the alternative of
-    co-fitting the rate does not actually reach the joint optimum -- the
-    co-fitted rate moved 0.7% in 34,000 further steps, and a fixed-rate fit
-    reached a lower loss than the floating fit that has the extra freedom.
+    a root-to-tip regression, which is a worse estimator than the MLE. On four
+    simulations with a known rate of 8.00e-4, run through the shipped path,
+    the default was off by 10.4% per replicate on average and the profile by
+    2.1%; the root went from 0.50 years out to 0.13. As signed means, which
+    cancel because the default errs in both directions, -4.6% against +0.6%.
+    Second, the alternative of co-fitting the rate does not actually reach the
+    joint optimum -- the co-fitted rate moved 0.7% in 34,000 further steps,
+    and a fixed-rate fit reached a lower loss than the floating fit that has
+    the extra freedom.
 
     And it is the only route to a rate interval that works. The closed-form
     one is a small difference of large numbers and comes out negative on real
@@ -647,6 +658,24 @@ def _profile_clock_rate(args, run_fit, build_model, initial_rate, terminals):
     The cost is one fit per grid point, and the grid can widen once if the
     best rate lands on an edge.
     """
+    # A profile reads differences between the losses of separate fits, and
+    # those differences are a few nats. The default convergence tolerance asks
+    # only that node dates have stopped moving by 0.1 days, which is the right
+    # test for dates and far too loose for this: measured on ebola, the
+    # profiled rate was 15.91 at that tolerance and 13.38 at a tenth of it,
+    # with intervals that do not overlap, and forcing fixed step counts gave
+    # 20.59, 16.79 and 14.36 at 400, 1500 and 4000 steps. The answer is stable
+    # from 0.01 days downwards -- 0.01 and 0.002 agree to four figures -- so
+    # tighten to there. Otherwise this reports an interval narrower than its
+    # own numerical error, which is worse than reporting none.
+    if args.convergence_tol_days > PROFILE_CONVERGENCE_TOL_DAYS:
+        print(f"Tightening --convergence_tol_days from "
+              f"{args.convergence_tol_days} to "
+              f"{PROFILE_CONVERGENCE_TOL_DAYS} for the whole run: profiling "
+              f"compares the losses of separate fits, and the default "
+              f"tolerance stops them before those losses are comparable.")
+        args.convergence_tol_days = PROFILE_CONVERGENCE_TOL_DAYS
+
     points = max(args.profile_clock_rate, 3)
     span = math.log(max(args.profile_clock_range, 1.01))
     centre = math.log(initial_rate)
@@ -702,6 +731,10 @@ def _report_profile(profile, origin_date):
     if all(date is not None for date in dates):
         print(f"Profiled root date {dates[1]:%Y-%m-%d} "
               f"(95% {dates[0]:%Y-%m-%d} to {dates[2]:%Y-%m-%d})")
+    else:
+        print(f"Profiled root {-profile['root']:.0f} days before the "
+              f"reference tip, which is outside the calendar this can print. "
+              f"That is itself worth taking as a warning about the fit.")
     print("This interval covers the clock rate's uncertainty and nothing "
           "else: the tree, the topology and the tip dates are all taken as "
           "given.")
@@ -709,29 +742,31 @@ def _report_profile(profile, origin_date):
 
 
 def _days_to_dates(origin_date, days):
-    """Calendar dates for day offsets, clamped to what datetime can hold.
+    """Calendar dates for day offsets, or None where there is no such date.
 
-    An unidentified node's bound can be arbitrarily far away, and a date
-    thousands of years out of range should come back as the end of the
-    representable range rather than crash the whole run at the last step.
+    A bound can be arbitrarily far away -- on lassa/l the root's interval is
+    plus or minus twenty-eight years around a root already before year zero --
+    so this has to cope with dates the calendar does not reach, and the way it
+    copes matters. Clamping was worse than useless: it wrote lassa/l a root of
+    -1430 with an interval of 1-01-02 to 1-01-02, an interval that does not
+    contain its own point estimate and looks like a confident answer of year
+    one. An empty cell says what is true, and date_sd_days still carries the
+    width.
+
+    The range to respect is the origin's own, not datetime's. The origin
+    arrives as a pandas Timestamp, which since pandas 2 reaches far outside
+    datetime.date's year 1 to 9999 -- which is how the predicted dates hold
+    negative years at all. So attempt the arithmetic and let the origin's type
+    decide, rather than pre-judging it against the narrower calendar.
     """
-    # The origin can arrive as a pandas Timestamp or a plain datetime
-    # depending on how the metadata parsed, and the two disagree about what
-    # years they can represent, so bound against the plain calendar and let
-    # anything the origin's own type still rejects come back empty.
-    plain = origin_date.date() if hasattr(origin_date, "date") else origin_date
-    low = (datetime.date.min - plain).days + 1
-    high = (datetime.date.max - plain).days - 1
     out = []
     for day in days:
         if not np.isfinite(day):
             out.append(None)
             continue
         try:
-            out.append(origin_date +
-                       datetime.timedelta(days=float(min(max(day, low),
-                                                         high))))
-        except (OverflowError, ValueError):
+            out.append(origin_date + datetime.timedelta(days=float(day)))
+        except (OverflowError, ValueError, OSError):
             out.append(None)
     return out
 

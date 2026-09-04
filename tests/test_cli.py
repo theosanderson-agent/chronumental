@@ -110,3 +110,41 @@ def test_intervals_bracket_the_point_estimate(tmp_path):
                 f"{row['predicted_date']} / {row['upper_95']}")
             checked += 1
     assert checked > 0
+
+
+def test_dates_outside_the_calendar_come_back_empty_not_clamped():
+    """A bound the calendar cannot reach must not be printed as a date.
+
+    Clamping wrote lassa/l a root of -1430 with an interval of 1-01-02 to
+    1-01-02: an interval that does not contain its own point estimate, and
+    that reads as a confident answer of year one. An empty cell is the honest
+    answer, and date_sd_days still carries the width.
+    """
+    import pandas as pd
+    from chronumental.__main__ import _days_to_dates
+
+    origin = pd.Timestamp("2015-06-01")
+    # A few days either way, then something no calendar reaches.
+    dates = _days_to_dates(origin, [-10.0, 0.0, 10.0, -1e12, float("nan")])
+    assert dates[0] is not None and dates[2] is not None
+    assert dates[1].year == 2015
+    assert dates[3] is None, "an unreachable date must be empty, not clamped"
+    assert dates[4] is None, "a non-finite offset must be empty"
+
+
+def test_a_deep_root_keeps_an_interval_that_contains_it():
+    """pandas reaches years datetime does not, and the bounds must follow it.
+
+    Half a million days before a 2015 origin is year -13, which pandas can
+    represent and datetime cannot. Bounding against datetime's calendar is
+    what produced the lassa/l interval above.
+    """
+    import pandas as pd
+    from chronumental.__main__ import _days_to_dates
+
+    origin = pd.Timestamp("2015-06-01")
+    low, middle, high = _days_to_dates(origin, [-740000.0, -739000.0,
+                                                -738000.0])
+    assert None not in (low, middle, high)
+    assert low < middle < high
+    assert middle.year < 0, "expected a date before year zero"

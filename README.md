@@ -60,9 +60,15 @@ Profiled root date 2015-06-10 (95% 2015-01-28 to 2015-10-18)
 ```
 
 On simulations with a known rate of 8.00e-4, over four replicates: the default
-missed by 10.4% on average and the profiled rate by 2.0%, the default root was
-0.50 years out and the profiled root 0.12, and the interval contained the true
+missed by 10.4% on average and the profiled rate by 2.1%, the default root was
+0.50 years out and the profiled root 0.13, and the interval contained the true
 rate 4 times out of 4 and the true root 3 out of 4.
+
+Turning this on also tightens `--convergence_tol_days` for the whole run, and
+says so. A profile compares the losses of separate fits, and the default
+tolerance — node dates settled to within 0.1 days — stops them well before
+those losses are comparable: on ebola it gave a rate of 15.91 where the
+converged answer is 13.38, with intervals that do not overlap.
 
 This does not fix the underlying bias — profiling *is* the joint maximum
 likelihood estimate, so it inherits whatever bias that has. It beats the
