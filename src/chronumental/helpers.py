@@ -9,9 +9,25 @@ def get_unnnamed_node_label(i):
 
 
 def preorder_traversal(node):
-    yield node
-    for clade in node.children:
-        yield from preorder_traversal(clade)
+    """Yield every node at or below `node`, parents before children.
+
+    Written with an explicit stack rather than recursion. The recursive
+    version overflowed Python's call stack on trees deep enough to matter:
+    a simulated million-tip coalescent tree raised RecursionError before
+    fitting could start, and the large SARS-CoV-2 trees this tool targets
+    are deep and unbalanced too.
+
+    The order is identical to the recursive version -- a node, then the
+    whole of its first child's subtree, then its second child's, and so on
+    -- which matters because unlabelled nodes are named by their position
+    in this traversal.
+    """
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        # Reversed, so the first child is popped first.
+        stack.extend(reversed(current.children))
 
 
 # Credit: Guillem Cucurull http://gcucurull.github.io/deep-learning/2020/06/03/jax-sparse-matrix-multiplication/
