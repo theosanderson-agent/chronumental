@@ -33,9 +33,6 @@ jobs:
       - name: Test
         run: |
           chronumental --dates ./test_data/ebola.metadata.csv --tree ./test_data/divergence_tree.nexus --dates_out dates_chron.tsv --tree_out tree_chron.nwk --steps 200 --treat_mutation_units_as_normalised_to_genome_size 19000
-      - name: Test horseshoe model
-        run: |
-          chronumental --dates ./test_data/ebola.metadata.csv --tree ./test_data/divergence_tree.nexus --dates_out dates_hs.tsv --tree_out tree_hs.nwk --steps 20 --model HorseShoeLike --treat_mutation_units_as_normalised_to_genome_size 19000
       - name: Test learnt clock variance
         run: |
           chronumental --dates ./test_data/ebola.metadata.csv --tree ./test_data/divergence_tree.nexus --dates_out dates_var.tsv --tree_out tree_var.nwk --steps 20 --variance_on_clock_rate --treat_mutation_units_as_normalised_to_genome_size 19000

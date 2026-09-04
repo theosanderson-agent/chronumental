@@ -89,20 +89,6 @@ def get_parser():
     )
 
     parser.add_argument(
-        '--initial_tau',
-        default=3.2,
-        type=float,
-        help=
-        "Initial value for the tau parameter in the model. Only applies to Horseshoe."
-    )
-
-    parser.add_argument(
-        '--hs_scale',
-        default=86917549.587,
-        type=float,
-        help="hs scale parameter in the model. Only applies to Horseshoe.")
-
-    parser.add_argument(
         '--steps',
         default=20000,
         type=int,
@@ -131,11 +117,6 @@ def get_parser():
         '--only_use_full_dates',
         action='store_true',
         help="Only use full dates, given to the precision of a day")
-
-    parser.add_argument('--model',
-                        default="DeltaGuideWithStrictLearntClock",
-                        type=str,
-                        help="Model type to use")
 
     parser.add_argument(
         '--output_unit',
@@ -334,12 +315,9 @@ def main():
         args.expected_min_between_transmissions,
         "enforce_exact_clock": args.enforce_exact_clock,
         "variance_on_clock_rate": args.variance_on_clock_rate,
-        "initial_tau": args.initial_tau,
-        "hs_scale": args.hs_scale,
-        "fixed_tau": True
     }
 
-    my_model = models.models[args.model](
+    my_model = models.DeltaGuideWithStrictLearntClock(
         rows=rows,
         cols=cols,
         branch_distances_array=branch_distances_array,
