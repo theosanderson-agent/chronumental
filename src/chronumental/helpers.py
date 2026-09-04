@@ -1,4 +1,5 @@
 """Shared constants and tree utilities."""
+import numpy as np
 
 # The Julian year, which is what "per year" means to treetime, LSD2 and to a
 # decimal-year date. Chronumental previously used 365 in every conversion
@@ -70,3 +71,18 @@ def make_path_sum(parent_indices, n_rounds, root_index):
         return accumulated
 
     return path_sum
+
+
+def path_sum_numpy(branch_values, parent_indices, n_rounds, root_index):
+    """The same pointer-jumping sum as make_path_sum, in numpy on the host.
+
+    Used once, for the output, where float64 is wanted and there is no
+    device to keep the values on.
+    """
+    accumulated = np.array(branch_values, dtype=np.float64)
+    accumulated[root_index] = 0.0
+    ancestor = np.asarray(parent_indices)
+    for _ in range(n_rounds):
+        accumulated = accumulated + accumulated[ancestor]
+        ancestor = ancestor[ancestor]
+    return accumulated

@@ -775,59 +775,47 @@ def main():
         # here unless --name_all_nodes asked for them, so the output tree is
         # the same either way. Parsing twice cost about three seconds and a
         # second copy of the tree at 300k tips, and more above that.
-        tree2 = tree
         if not args.name_all_nodes:
-            for node in helpers.preorder_traversal(tree2.root):
+            for node in helpers.preorder_traversal(tree.root):
                 if node.label in invented_labels:
                     node.label = None
 
-        branch_length_lookup = dict(
-            zip(names_init,
-                my_model.get_branch_times(params).tolist()))
+        # Every node's date comes from the same path sum the model used, so
+        # the tree and the dates agree by construction. The root's own branch
+        # is zeroed inside the sum, matching the zero written for it below: a
+        # root has no parent for time to elapse from.
+        branch_times = np.asarray(my_model.get_branch_times(params),
+                                  dtype=np.float64)
+        # Summed in float64 on the host, so that a date at the bottom of a
+        # deep tree is not accumulated in single precision.
+        node_days = helpers.path_sum_numpy(branch_times, parent_indices,
+                                           n_rounds, root_index)
+        node_days += float(params['root_date_mu'])
+        unit = helpers.DAYS_PER_YEAR if args.output_unit == "years" else 1
 
-        total_lengths_in_time = {}
-
-        total_lengths = dict()
-
-        for i, node in enumerate(helpers.preorder_traversal(tree2.root)):
-
+        node_day_by_name = {}
+        for i, node in enumerate(helpers.preorder_traversal(tree.root)):
             if not node.label:
                 node_name = helpers.get_unnnamed_node_label(i)
                 if args.name_all_nodes:
                     node.label = node_name
             else:
                 node_name = node.label.replace("'", "")
-            node.edge_length = branch_length_lookup[node_name] / (
-                helpers.DAYS_PER_YEAR
-                if args.output_unit == "years" else 1)
-            if not node.parent:
-                # The root spans no time: it has no parent for time to elapse
-                # from, and its branch length was zeroed on input so the fit
-                # never used one. Writing a fitted value here would make the
-                # output tree and the output dates disagree, since walking
-                # the tree from the root would accumulate a duration the
-                # dates omit.
-                node.edge_length = 0.0
-                total_lengths[node] = 0.0
-            else:
-                total_lengths[node] = branch_length_lookup[
-                    node_name] + total_lengths[node.parent]
-
+            pos = name_to_pos[node_name]
+            node.edge_length = (0.0 if node.parent is None else
+                                branch_times[pos] / unit)
             if node.label:
-                total_lengths_in_time[node.label.replace(
-                    "'", "")] = total_lengths[node]
+                node_day_by_name[node_name] = node_days[pos]
 
         print("Writing tree to file")
-        tree2.write_tree_newick(args.tree_out)
+        tree.write_tree_newick(args.tree_out)
         print("")
         print(f"Wrote tree to {args.tree_out}")
 
         origin_date = lookup[reference_point][0]
         output_dates = {
-            name:
-            origin_date +
-            datetime.timedelta(days=(x + params['root_date_mu'].tolist()))
-            for name, x in total_lengths_in_time.items()
+            name: origin_date + datetime.timedelta(days=float(x))
+            for name, x in node_day_by_name.items()
         }
 
         names, values = zip(*output_dates.items())
