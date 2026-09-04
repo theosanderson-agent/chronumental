@@ -12,12 +12,9 @@ import jax.numpy as jnp
 import numpy as np
 from . import helpers
 from . import input_mod
-import collections
 import jax
-import numpyro.distributions as dist
 import numpyro.optim as optim
 from numpyro.infer import SVI, Trace_ELBO
-from numpyro.infer.autoguide import AutoDelta
 from . import models
 from scipy import stats
 
