@@ -292,7 +292,7 @@ def theil_sen_clock_rate(terminal_target_dates_array, root_to_tip):
         x_fit, y_fit = x, y
     slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
         y_fit, x_fit)
-    return slope_per_day * 365
+    return slope_per_day * helpers.DAYS_PER_YEAR
 
 
 def _make_convergence_check(path_sum):
@@ -705,7 +705,8 @@ def main():
             else:
                 node_name = node.label.replace("'", "")
             node.edge_length = branch_length_lookup[node_name] / (
-                365 if args.output_unit == "years" else 1)
+                helpers.DAYS_PER_YEAR
+                if args.output_unit == "years" else 1)
             if not node.parent:
                 # The root spans no time: it has no parent for time to elapse
                 # from, and its branch length was zeroed on input so the fit

@@ -71,7 +71,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
 
     def set_initial_time(self):
         self.initial_time = jnp.maximum(
-            365 * (self.branch_distances_array) / self.clock_rate,
+            helpers.DAYS_PER_YEAR * (self.branch_distances_array) /
+            self.clock_rate,
             self.expected_min_between_transmissions)
 
     def calc_dates(self, branch_lengths_array, root_date):
@@ -97,9 +98,10 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
                 f"latent_mutation_rate",
                 dist.Uniform(low=0.0, high=self.clock_rate * 1000.0))
 
+        expected_mutations = (mutation_rate * branch_times /
+                              helpers.DAYS_PER_YEAR)
         branch_distances = numpyro.sample("branch_distances",
-                                          dist.Poisson(mutation_rate *
-                                                       branch_times / 365),
+                                          dist.Poisson(expected_mutations),
                                           obs=self.branch_distances_array)
 
         calced_dates = self.calc_dates(branch_times, root_date)
@@ -112,7 +114,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
 
     def guide(self):
         root_date_mu = numpyro.param(
-            "root_date_mu", -365 * self.ref_point_distance / self.clock_rate)
+            "root_date_mu", -helpers.DAYS_PER_YEAR * self.ref_point_distance /
+            self.clock_rate)
 
         root_date = numpyro.sample("root_date", dist.Delta(root_date_mu))
 
