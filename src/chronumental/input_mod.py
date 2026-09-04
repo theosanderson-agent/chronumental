@@ -1,13 +1,10 @@
-from os import name
 import pandas as pd
 import numpy as np
-import gzip
 import datetime
 import math
 from alive_progress import alive_it
 import treeswift
 import xopen
-import lzma
 from . import helpers
 from datetime import datetime as dt
 
