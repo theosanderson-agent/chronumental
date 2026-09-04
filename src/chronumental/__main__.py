@@ -93,7 +93,8 @@ def get_parser():
             "the damage they do, but it finds only the worst of them -- two "
             "sequences of similar divergence can swap dates and leave almost "
             "no trace in this statistic -- so it is a mitigation rather than "
-            "a fix."))
+            "a fix. On the Ebola test data 4 drops 20 of 362 tips and 2 "
+            "drops 32, so values below 4 are aggressive."))
 
     parser.add_argument(
         '--variance_dates',
@@ -345,9 +346,26 @@ def theil_sen_clock_rate(terminal_target_dates_array, root_to_tip):
         x_fit, y_fit = x[idx], y[idx]
     else:
         x_fit, y_fit = x, y
-    slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
-        y_fit, x_fit)
+    slope_per_day = stats.theilslopes(y_fit, x_fit)[0]
     return slope_per_day * helpers.DAYS_PER_YEAR
+
+
+def clock_filter(days, root_to_tip, slope_per_day, iqd):
+    """Mask of the tips whose root-to-tip divergence sits within `iqd`
+    interquartile ranges of the clock line, or None with fewer than 20 dated
+    tips.
+
+    Uses the slope already estimated (Theil-Sen, or --clock) rather than a
+    least-squares line of its own, so the outliers being hunted do not
+    distort the line they are tested against. The median residual is always
+    kept, so this never drops every tip.
+    """
+    if len(days) < 20:
+        return None
+    residuals = root_to_tip - slope_per_day * days
+    residuals = residuals - np.median(residuals)
+    q1, q3 = np.percentile(residuals, [25, 75])
+    return np.abs(residuals) <= iqd * (q3 - q1)
 
 
 class ConvergenceMonitor:
@@ -496,8 +514,6 @@ def main():
         f"Found {len(terminal_names)} terminals with usable date metadata{' [full date mode is on]' if args.only_use_full_dates else ''}"
     )
 
-    terminal_name_to_pos = {x: i for i, x in enumerate(terminal_names)}
-
     initial_branch_lengths, invented_labels = (
         input_mod.get_initial_branch_lengths_and_name_all_nodes(tree))
     names_init = sorted(initial_branch_lengths.keys())
@@ -522,56 +538,68 @@ def main():
     terminal_indices = jnp.asarray(
         [name_to_pos[name] for name in terminal_names], dtype=jnp.int32)
 
-    if args.clock_filter_iqd > 0:
-        residuals = np.asarray(path_sum(branch_distances_array)[terminal_indices])
-        days = np.asarray(terminal_target_dates_array)
-        if len(days) >= 20:
-            slope, intercept = np.polyfit(days, residuals, 1)
-            offset = residuals - (slope * days + intercept)
-            q1, q3 = np.percentile(offset, [25, 75])
-            span = q3 - q1
-            middle = np.median(offset)
-            keep = np.abs(offset - middle) <= args.clock_filter_iqd * span
-            dropped = int((~keep).sum())
-            if dropped and dropped < len(days):
-                print(f"Clock filter: dropping the dates of {dropped} of "
-                      f"{len(days)} tips more than {args.clock_filter_iqd} "
-                      f"interquartile ranges off the root-to-tip line")
-                terminal_names = [n for n, k in zip(terminal_names, keep) if k]
-                terminal_target_dates_array = terminal_target_dates_array[keep]
-                terminal_target_errors_array = terminal_target_errors_array[keep]
-                terminal_name_to_pos = {x: i for i, x in enumerate(terminal_names)}
-                target_dates = {k: v for k, v in target_dates.items()
-                                if k in terminal_name_to_pos}
-                terminal_indices = jnp.asarray(
-                    [name_to_pos[name] for name in terminal_names],
-                    dtype=jnp.int32)
-            elif dropped:
-                print("Clock filter: would drop every tip; keeping all dates")
+    root_to_tip = np.asarray(path_sum(branch_distances_array)[terminal_indices])
+    genome_size = args.treat_mutation_units_as_normalised_to_genome_size
+
+    def estimate_clock(days, root_to_tip):
+        print("No clock rate specified, performing root-to-tip regression to "
+              "estimate starting value")
+        rate = theil_sen_clock_rate(days, root_to_tip)
+        # NaN would pass a plain sign test, since every comparison with it is
+        # False, and the fit would then run through to an all-NaN tree.
+        if not math.isfinite(rate) or rate <= 0:
+            raise ValueError(
+                f"ERROR: Root-to-tip regression estimated a clock rate of "
+                f"{rate}, which cannot be used. This happens when the dated "
+                "tips carry no temporal signal, for instance when they all "
+                "share one date. If your dataset is correct you will need to "
+                "specify an initial clock rate with --clock.")
+        message = f"Theil-Sen root-to-tip regression: got rate of {rate}"
+        if genome_size:
+            # The tree was scaled up by the genome size, so this is in
+            # mutations per year; --clock takes the tree's own units.
+            message += (f" mutations per year, i.e. {rate / genome_size} in "
+                        "the units --clock takes")
+        print(message)
+        return rate
 
     if args.clock:
         print(f"Using clock rate {args.clock}")
-        clock_rate = args.clock
-        if args.treat_mutation_units_as_normalised_to_genome_size:
-            clock_rate = clock_rate * args.treat_mutation_units_as_normalised_to_genome_size
+        clock_rate = args.clock * genome_size if genome_size else args.clock
     else:
-        root_to_tip = path_sum(branch_distances_array)[terminal_indices]
+        clock_rate = estimate_clock(np.asarray(terminal_target_dates_array),
+                                    root_to_tip)
 
-        print(
-            "No clock rate specified, performing root-to-tip regression to estimate starting value"
-        )
-        clock_rate = theil_sen_clock_rate(terminal_target_dates_array,
-                                          root_to_tip)
-        print(f"Theil-Sen root-to-tip regression: got rate of: {clock_rate}")
-        if clock_rate < 0:
-            raise ValueError(
-                "ERROR: Root-to-tip regression predicted a negative mutation rate. If your dataset is correct you will need to manually specify an initial clock rate with --clock."
-            )
+    if args.clock_filter_iqd > 0:
+        days = np.asarray(terminal_target_dates_array)
+        keep = clock_filter(days, root_to_tip,
+                            clock_rate / helpers.DAYS_PER_YEAR,
+                            args.clock_filter_iqd)
+        if keep is None:
+            print("Clock filter: needs at least 20 dated tips, so keeping "
+                  "every date")
+        elif not keep.all():
+            print(f"Clock filter: dropping the dates of {int((~keep).sum())} "
+                  f"of {len(days)} tips more than {args.clock_filter_iqd} "
+                  "interquartile ranges off the root-to-tip line")
+            terminal_names = [n for n, k in zip(terminal_names, keep) if k]
+            kept = set(terminal_names)
+            target_dates = {k: v for k, v in target_dates.items() if k in kept}
+            terminal_target_dates_array = terminal_target_dates_array[keep]
+            terminal_target_errors_array = terminal_target_errors_array[keep]
+            terminal_indices = terminal_indices[keep]
+            root_to_tip = root_to_tip[keep]
+            if not args.clock:
+                # Estimate again without the tips just dropped.
+                clock_rate = estimate_clock(
+                    np.asarray(terminal_target_dates_array), root_to_tip)
 
-    if clock_rate < 1 and not args.treat_mutation_units_as_normalised_to_genome_size:
+    if clock_rate < 1 and not genome_size:
         raise ValueError(
-            "Clock rate is less than 1 mutation per year. This probably means you need to specify a genome_size with --treat_mutation_units_as_normalised_to_genome_size size. If you are sure that you do not, set that parameter to 1.0."
-        )
+            "Clock rate is less than 1 mutation per year. This probably means "
+            "you need to specify a genome size with "
+            "--treat_mutation_units_as_normalised_to_genome_size. If you are "
+            "sure that you do not, set that parameter to 1.")
 
     # The clock rate is held at the estimate unless asked otherwise. Fitting
     # it jointly with one free duration per branch biases it low -- those
