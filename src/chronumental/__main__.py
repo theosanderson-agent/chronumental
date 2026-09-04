@@ -82,6 +82,33 @@ def get_parser():
         type=float)
 
     parser.add_argument(
+        '--clock_estimator',
+        choices=('theil-sen', 'phylogenetic'),
+        default='theil-sen',
+        help=(
+            "Estimator for the starting clock rate when --clock is omitted. "
+            "'theil-sen' is a robust root-to-tip regression that treats tips "
+            "as independent observations even where they share ancestry. "
+            "'phylogenetic' instead uses Felsenstein's independent contrasts, "
+            "which corrects for that shared ancestry. Contrasts are the more "
+            "principled estimator, but they fit a lower rate, and since the "
+            "root is the node furthest from any dated tip it is the most "
+            "sensitive to that: on deep trees the lower rate can push the "
+            "root implausibly far back. 'phylogenetic' does better on "
+            "shallow, densely sampled trees; 'theil-sen' is the safer "
+            "default across a range of tree depths."))
+
+    parser.add_argument(
+        '--phylogenetic_clock_variance_floor',
+        default=5.0,
+        type=float,
+        help=(
+            "Minimum per-branch mutation variance used by "
+            "--clock_estimator phylogenetic. The default prevents branches "
+            "with very few observed mutations from being treated as nearly "
+            "noiseless by the Gaussian contrast approximation."))
+
+    parser.add_argument(
         '--variance_dates',
         default=0.3,
         type=float,
@@ -233,6 +260,41 @@ def get_parser():
     return parser
 
 
+def theil_sen_clock_rate(terminal_target_dates_array, root_to_tip):
+    """Robust root-to-tip regression slope, in branch-distance units per year.
+
+    The starting clock rate seeds the prior (Uniform(0, clock_rate * 1000))
+    and every initial value in the guide, so a bad estimate here poisons the
+    whole fit. Ordinary least squares is not robust: under a relaxed
+    (non-strict) clock, root-to-tip divergence is noisy, and a handful of tips
+    with extreme dates or divergences get high leverage and can drag the
+    unweighted OLS slope far from the truth. Theil-Sen (the median of all
+    pairwise slopes) has a 29% breakdown point and is far less sensitive to
+    such outliers, while agreeing closely with OLS when the strict-clock
+    assumption actually holds.
+    """
+    x = np.asarray(terminal_target_dates_array)
+    y = np.asarray(root_to_tip)
+    # Theil-Sen is O(n^2) in the number of tips (it forms every pairwise
+    # slope), which is fine for hundreds or a few thousand tips but can
+    # exhaust memory on the much larger real-world trees chronumental is
+    # sometimes run on. Cap the number of points fed to it by subsampling; a
+    # few thousand tips is already far more than needed to estimate one slope
+    # robustly.
+    max_points_for_theilsen = 5000
+    if x.shape[0] > max_points_for_theilsen:
+        rng = np.random.default_rng(0)
+        idx = rng.choice(x.shape[0],
+                         size=max_points_for_theilsen,
+                         replace=False)
+        x_fit, y_fit = x[idx], y[idx]
+    else:
+        x_fit, y_fit = x, y
+    slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
+        y_fit, x_fit)
+    return slope_per_day * 365
+
+
 def _make_convergence_check(path_sum):
     """Build the two jitted functions behind the early-stopping convergence
     check.
@@ -376,40 +438,19 @@ def main():
         print(
             "No clock rate specified, performing root-to-tip regression to estimate starting value"
         )
-        # Root-to-tip regression to get a starting value for the clock rate.
-        # This seeds the prior (Uniform(0, clock_rate * 1000)) and every
-        # initial value in the guide, so a bad estimate here poisons the
-        # whole fit. Ordinary least squares is not robust: under a relaxed
-        # (non-strict) clock, root-to-tip divergence is noisy, and a
-        # handful of tips with extreme dates or divergences get high
-        # leverage and can drag the unweighted OLS slope far from the
-        # truth. Theil-Sen (the median of all pairwise slopes) has a 29%
-        # breakdown point and is far less sensitive to such outliers,
-        # while agreeing closely with OLS when the strict-clock
-        # assumption actually holds.
-        x = np.asarray(terminal_target_dates_array)
-        y = np.asarray(root_to_tip)
-        # Theil-Sen is O(n^2) in the number of tips (it forms every
-        # pairwise slope), which is fine for hundreds or a few thousand
-        # tips but can exhaust memory on the much larger real-world trees
-        # chronumental is sometimes run on. Cap the number of points fed
-        # to it by subsampling; a few thousand tips is already far more
-        # than needed to estimate one slope robustly.
-        max_points_for_theilsen = 5000
-        if x.shape[0] > max_points_for_theilsen:
-            rng = np.random.default_rng(0)
-            idx = rng.choice(x.shape[0],
-                             size=max_points_for_theilsen,
-                             replace=False)
-            x_fit, y_fit = x[idx], y[idx]
+        if args.clock_estimator == 'phylogenetic':
+            clock_rate = input_mod.estimate_clock_rate_phylogenetic(
+                tree, name_to_pos, np.asarray(branch_distances_array),
+                np.asarray(terminal_indices),
+                np.asarray(terminal_target_dates_array),
+                np.asarray(terminal_target_errors_array),
+                variance_floor=args.phylogenetic_clock_variance_floor)
+            print(f"Phylogenetic clock regression: got rate of: {clock_rate}")
         else:
-            x_fit, y_fit = x, y
-        slope_per_day, intercept, lo_slope, hi_slope = stats.theilslopes(
-            y_fit, x_fit)
-        slope_per_year = slope_per_day * 365
-
-        print(f"Theil-Sen root-to-tip regression: got rate of: {slope_per_year}")
-        clock_rate = slope_per_year
+            clock_rate = theil_sen_clock_rate(terminal_target_dates_array,
+                                              root_to_tip)
+            print(
+                f"Theil-Sen root-to-tip regression: got rate of: {clock_rate}")
         if clock_rate < 0:
             raise ValueError(
                 "ERROR: Root-to-tip regression predicted a negative mutation rate. If your dataset is correct you will need to manually specify an initial clock rate with --clock."
