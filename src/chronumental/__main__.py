@@ -260,6 +260,34 @@ def get_parser():
               "tree."))
 
     parser.add_argument(
+        '--initialise',
+        choices=('tip-dates', 'clock'),
+        default='tip-dates',
+        help=(
+            "Where the fit starts. 'tip-dates' puts every tip on its own "
+            "reported date and gives each internal node the mean over its "
+            "children of the child's position less what that child's "
+            "mutations represent at the clock rate. 'clock' is the older "
+            "behaviour, which ignores the tip dates: every branch starts at "
+            "its own mutations over the clock rate and the root at one "
+            "reference tip's divergence over that rate. The root date barely "
+            "moves during a fit, so this choice largely decides where it "
+            "ends up."))
+
+    parser.add_argument(
+        '--initial_branch_floor',
+        choices=('positive', 'mutations'),
+        default='positive',
+        help=(
+            "The floor the tip-date initialiser puts under each branch. "
+            "'positive' keeps only what is needed to keep durations positive "
+            "and lets the tip-date estimate stand. 'mutations' additionally "
+            "requires at least the time that branch's own mutations "
+            "represent at the clock rate, which pushes a child later "
+            "wherever the tip dates put it earlier than the mutations allow, "
+            "and so inflates the tree wherever the clock estimate is off."))
+
+    parser.add_argument(
         '--floating_clock_rate',
         action='store_true',
         help=(
@@ -556,6 +584,23 @@ def main():
         "variance_on_clock_rate": args.variance_on_clock_rate,
     }
 
+    # Every tip starts on its own date and each internal node takes the mean
+    # over its children of the child's position less what that child's
+    # mutations represent at the clock rate. Averaging over children rather
+    # than over all descendant tips is the point: a tip's implied ancestor
+    # date is distorted in proportion to the divergence it has accumulated,
+    # so recent tips in a densely sampled clade are both numerous and badly
+    # biased, and weighting each child subtree equally stops them outvoting a
+    # sparse deep lineage.
+    branch_time_init, initial_root_date = (
+        input_mod.estimate_initial_times_local(
+            tree, name_to_pos, branch_distances_array, target_dates,
+            clock_rate,
+            mutation_floor=args.initial_branch_floor == 'mutations'))
+    initial_branch_times_array = jnp.asarray(
+        [branch_time_init[x] for x in names_init])
+    use_tip_dates = args.initialise == 'tip-dates'
+
     my_model = models.DeltaGuideWithStrictLearntClock(
         path_sum=path_sum,
         terminal_indices=terminal_indices,
@@ -564,7 +609,10 @@ def main():
         terminal_target_errors_array=terminal_target_errors_array,
         ref_point_distance=ref_point_distance,
         model_configuration=model_configuration,
-        terminal_names=terminal_names)
+        terminal_names=terminal_names,
+        initial_branch_times_array=(initial_branch_times_array
+                                    if use_tip_dates else None),
+        initial_root_date=initial_root_date if use_tip_dates else None)
 
     print("Performing SVI:")
     optimiser = optim.ClippedAdam(

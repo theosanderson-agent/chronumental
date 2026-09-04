@@ -21,8 +21,26 @@ class ChronumentalModelBase(object):
             'terminal_target_errors_array']
         self.ref_point_distance = kwargs['ref_point_distance']
 
+        self.initial_branch_times_array = kwargs.get(
+            'initial_branch_times_array')
+        self.initial_root_date = kwargs.get('initial_root_date')
         self.set_initial_time()
         self.terminal_names = kwargs['terminal_names']
+
+    def get_initial_root_date(self):
+        """Where the guide's root date starts.
+
+        From the initialiser when it supplied one, otherwise the older
+        estimate: one reference tip's divergence divided by the clock rate.
+        The root date is an unconstrained parameter in days and Adam moves
+        such a parameter by about the learning rate each step, so it travels
+        very little during a fit and this choice largely decides where it
+        ends up.
+        """
+        if self.initial_root_date is not None:
+            return self.initial_root_date
+        return (-helpers.DAYS_PER_YEAR * self.ref_point_distance /
+                self.clock_rate)
 
     def _date_scale(self):
         """Standard deviation of the date likelihood, per tip, in days.
@@ -94,6 +112,14 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         return results
 
     def set_initial_time(self):
+        if self.initial_branch_times_array is not None:
+            # A small positive floor rather than the minimum time between
+            # transmissions: this value already reflects the tip dates, so it
+            # should not be dragged upward by a floor meant for the cruder
+            # mutations-over-rate estimate.
+            self.initial_time = jnp.maximum(self.initial_branch_times_array,
+                                            1e-3)
+            return
         self.initial_time = jnp.maximum(
             helpers.DAYS_PER_YEAR * (self.branch_distances_array) /
             self.clock_rate,
@@ -145,9 +171,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
                                      obs=self.terminal_target_dates_array)
 
     def guide(self):
-        root_date_mu = numpyro.param(
-            "root_date_mu", -helpers.DAYS_PER_YEAR * self.ref_point_distance /
-            self.clock_rate)
+        root_date_mu = numpyro.param("root_date_mu",
+                                     self.get_initial_root_date())
 
         root_date = numpyro.sample("root_date", dist.Delta(root_date_mu))
 
