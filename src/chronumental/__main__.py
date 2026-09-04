@@ -234,6 +234,16 @@ def get_parser():
               "drawn from a random distribution with a learnt variance."))
 
     parser.add_argument(
+        '--root_date_prior_scale_days',
+        default=36500.0,
+        type=float,
+        help=("Scale of the Cauchy prior on the root date, in days before "
+              "the oldest tip. Heavy-tailed, so this mainly sets where the "
+              "prior stops being flat rather than how far back the root may "
+              "go; the default of 100 years is uninformative for almost any "
+              "tree."))
+
+    parser.add_argument(
         '--enforce_exact_clock',
         action='store_true',
         help=("Will cause the clock rate to be exactly"
@@ -487,6 +497,7 @@ def main():
         "expected_min_between_transmissions":
         args.expected_min_between_transmissions,
         "quadrature_date_scale": not args.multiply_date_precision,
+        "root_date_prior_scale": args.root_date_prior_scale_days,
         "enforce_exact_clock": args.enforce_exact_clock,
         "variance_on_clock_rate": args.variance_on_clock_rate,
     }
