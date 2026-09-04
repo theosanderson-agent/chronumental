@@ -729,8 +729,8 @@ def _report_profile(profile, origin_date):
                                          profile["root"],
                                          profile["root_high"]])
     if all(date is not None for date in dates):
-        print(f"Profiled root date {dates[1]:%Y-%m-%d} "
-              f"(95% {dates[0]:%Y-%m-%d} to {dates[2]:%Y-%m-%d})")
+        print(f"Profiled root date {_format_date(dates[1])} "
+              f"(95% {_format_date(dates[0])} to {_format_date(dates[2])})")
     else:
         print(f"Profiled root {-profile['root']:.0f} days before the "
               f"reference tip, which is outside the calendar this can print. "
@@ -739,6 +739,24 @@ def _report_profile(profile, origin_date):
           "else: the tree, the topology and the tip dates are all taken as "
           "given.")
     print("")
+
+
+def _format_date(value):
+    """A yyyy-mm-dd string, including for years the standard library refuses.
+
+    pandas Timestamps reach years far outside datetime's 1 to 9999 -- which is
+    how a root before year zero gets written at all -- but strftime on one of
+    those raises NotImplementedError and says to build the string from the
+    components instead. So do that. Clamping to the representable range was
+    the previous answer and was worse: it printed lassa/l a root interval of
+    1-01-02 to 1-01-02 around a point estimate of -1430.
+    """
+    if value is None:
+        return None
+    try:
+        return f"{value:%Y-%m-%d}"
+    except (ValueError, NotImplementedError):
+        return f"{value.year:d}-{value.month:02d}-{value.day:02d}"
 
 
 def _days_to_dates(origin_date, days):

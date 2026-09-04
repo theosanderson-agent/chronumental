@@ -13,6 +13,7 @@ fitting stack. Step counts are tiny -- this asks whether each path runs and
 writes what it promises, not whether it converges.
 """
 import csv
+import datetime
 import os
 import subprocess
 import sys
@@ -148,3 +149,22 @@ def test_a_deep_root_keeps_an_interval_that_contains_it():
     assert None not in (low, middle, high)
     assert low < middle < high
     assert middle.year < 0, "expected a date before year zero"
+
+
+def test_a_date_before_year_zero_can_still_be_printed():
+    """pandas refuses strftime outside the standard library's range.
+
+    Removing the clamp let a root before year zero reach the formatter, and
+    the formatter raised NotImplementedError -- so --profile_clock_rate
+    crashed on lassa/l, whose root is around -1430. pandas says to build the
+    string from the components, which is what _format_date does.
+    """
+    import pandas as pd
+    from chronumental.__main__ import _format_date
+
+    assert _format_date(None) is None
+    assert _format_date(pd.Timestamp("2015-06-01")) == "2015-06-01"
+    deep = pd.Timestamp("2015-06-01") + datetime.timedelta(days=-760000)
+    assert deep.year < 0, "expected a date before year zero for this test"
+    text = _format_date(deep)
+    assert text.startswith("-") and text.count("-") == 3, text
