@@ -1,5 +1,13 @@
 """Shared constants and tree utilities."""
 
+# The Julian year, which is what "per year" means to treetime, LSD2 and to a
+# decimal-year date. Chronumental previously used 365 in every conversion
+# between days and years. Used consistently that constant cancels out of the
+# fit -- it only renames the unit the clock rate is quoted in -- but it made
+# our reported rate differ from every tool we compare against by 0.07%, and
+# it made --output_unit years disagree with a decimal year by the same.
+DAYS_PER_YEAR = 365.25
+
 
 def get_unnnamed_node_label(i):
     name = f"NODE_{i:07d}"
