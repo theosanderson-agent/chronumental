@@ -756,12 +756,21 @@ def _confidence_columns(args, my_model, params, path_sum, parent_indices,
                 mutations_per_branch=np.asarray(branch_distances_array),
                 branch_times=branch_times,
                 node_dates=node_days,
-                terminal_indices=np.asarray(terminal_indices),
+                # The model's own tips, not the ones the run started with:
+                # --robust_passes refits without the dates it discarded, so
+                # the two lists differ and pairing them with the model's
+                # sigmas would silently mismatch.
+                terminal_indices=np.asarray(my_model.terminal_indices),
                 terminal_sigmas=np.asarray(my_model.get_date_sigmas()),
                 clock_rate=float(my_model.get_mutation_rate(params)),
                 include_rate_uncertainty=(
                     not args.confidence_conditions_on_clock_rate)))
     except Exception as exception:  # noqa: BLE001 - reported, not swallowed
+        # Reported rather than raised, because a failure here should not cost
+        # someone the fit they just waited for. tests/test_cli.py asserts the
+        # columns are actually present under every option, since a caught
+        # exception leaves a successful run with the columns quietly missing
+        # -- which is how a --robust_passes mismatch went unnoticed once.
         print(f"Could not compute confidence intervals ({exception}); "
               f"writing dates without them.")
         return {}

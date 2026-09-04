@@ -103,7 +103,18 @@ where the tree runs out of mutations.
 Cost, at a million nodes: 1.3 s at depth 223, 4.7 s at depth 1017, 20.5 s at
 depth 5025. The work is linear in the tree but the sweeps step one level at a
 time from Python, so it is the tree's depth rather than its size that shows
-up. Real trees here are shallow -- 34 for ebola, 69 for measles/genome.
+up. Real trees here are shallow -- 34 for ebola, 69 for measles/genome. In a
+whole run, measured against the fit on simulated trees of 20,000 to 150,000
+tips, computing these costs 4 to 7% of the total.
+
+How much of a tree this sets aside grows with the tree. On those same
+simulations the share of nodes with no mutations to date them went 2%, 7%,
+15% as the tips went 20,000, 60,000, 150,000: denser sampling means shorter
+branches means more of them empty. So on the millions of tips this tool exists
+for, a large minority of internal nodes have no date of their own and only a
+bracket, and a summary that quietly averaged over them would be reporting
+mostly arithmetic. That is the argument for flagging them rather than
+smoothing them over.
 """
 import math
 

@@ -68,11 +68,18 @@ def run_case(tmp_path, extra):
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_each_option_runs_and_writes_dates(tmp_path, name):
-    dates_out, _stdout = run_case(tmp_path, CASES[name])
+    dates_out, stdout = run_case(tmp_path, CASES[name])
     with open(dates_out) as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     assert rows, "no dates written"
     assert all(row["predicted_date"] for row in rows)
+    # Exiting cleanly is not enough. A failure inside the interval code is
+    # caught so it cannot cost someone their fit, which means a broken option
+    # looks exactly like a working one apart from two missing columns -- how
+    # the --robust_passes tip mismatch survived a first pass of these tests.
+    assert "Could not compute confidence intervals" not in stdout
+    if "--no_confidence_intervals" not in CASES[name]:
+        assert "lower_95" in rows[0], f"intervals missing under {name}"
 
 
 def test_intervals_are_present_by_default_and_absent_when_asked(tmp_path):
