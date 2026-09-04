@@ -110,7 +110,7 @@ def get_parser():
 
     parser.add_argument(
         '--variance_dates',
-        default=0.3,
+        default=3.0,
         type=float,
         help=
         ("How uncertain the reported tip dates are taken to be, in days: the "
@@ -118,7 +118,11 @@ def get_parser():
          "date. For a tip dated only to a month or a year this is combined "
          "in quadrature with half the width of that interval, so an "
          "imprecise date is dominated by its own window and raising this "
-         "value does not inflate it.")
+         "value does not inflate it. The old default of 0.3 treated a full "
+         "date as known to within about seven hours, which over-constrains "
+         "the fit: the tip dates then pin each root-to-tip total so tightly "
+         "that the mutation counts have almost no say in how that total is "
+         "divided among the branches on the path.")
     )
 
     parser.add_argument(
