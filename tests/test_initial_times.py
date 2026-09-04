@@ -129,3 +129,24 @@ def test_a_deep_tree_does_not_recurse():
     assert len(branch_times) == 2 * depth
     assert all(value > 0 for value in branch_times.values())
     assert math.isfinite(root_date)
+
+
+def test_an_undated_subtree_starts_from_its_mutations_not_the_floor():
+    """With no tip date anywhere below it, the mutation count is the only
+    evidence a branch has, so it should start there rather than at the
+    positivity floor."""
+    newick = "((a:5,b:5)ab:10,(c:5,d:5)cd:10)root;"
+    dates = {"a": 0.0, "b": 10.0}
+    branch_times, _, _ = build(newick, dates, clock_rate=365.25)
+    # One mutation per day at this clock rate.
+    assert branch_times["cd"] == pytest.approx(10.0, abs=1e-6)
+    assert branch_times["c"] == pytest.approx(5.0, abs=1e-6)
+    assert branch_times["d"] == pytest.approx(5.0, abs=1e-6)
+
+
+def test_duplicate_labels_are_rejected():
+    """An unlabelled node is named by its preorder position, so a genuine
+    label of the same form would silently share its parameters."""
+    tree = treeswift.read_tree_newick("((a:1,b:1):1,(c:1,NODE_0000001:1):1);")
+    with pytest.raises(ValueError, match="NODE_0000001"):
+        input_mod.get_initial_branch_lengths_and_name_all_nodes(tree)

@@ -238,7 +238,10 @@ def get_target_dates(tree, lookup, reference_point):
         terminal.label = terminal.label.replace("'", "")
         if terminal.label in lookup:
             date = lookup[terminal.label][0]
-            diff = (date - lookup[reference_point][0]).days
+            # total_seconds rather than .days: the latter floors, which
+            # would throw away the half-day centring of month- and year-only
+            # dates.
+            diff = (date - lookup[reference_point][0]).total_seconds() / 86400
             terminal_targets[terminal.label] = diff
             terminal_targets_error[terminal.label] = lookup[terminal.label][1]
     return terminal_targets, terminal_targets_error
@@ -265,6 +268,12 @@ def get_initial_branch_lengths_and_name_all_nodes(tree):
         if node.edge_length is None:
             node.edge_length = 0
 
+        if node.label in initial_branch_lengths:
+            raise ValueError(
+                f"Two nodes in the tree are labelled {node.label!r}. Labels "
+                "must be unique, including against the NODE_0000000 pattern "
+                "used to name unlabelled nodes, because they index the "
+                "fitted parameters.")
         initial_branch_lengths[node.label] = node.edge_length
     return initial_branch_lengths, invented_labels
 
@@ -291,6 +300,9 @@ def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
     reference units as target_dates.
     """
     days_per_mutation = helpers.DAYS_PER_YEAR / clock_rate
+    # Indexing a jax array one element at a time is a device-to-host transfer
+    # per node, which at 60k nodes took 6.6 s against 0.2 s for numpy.
+    branch_distances_array = np.asarray(branch_distances_array, dtype=float)
 
     def own_mutation_days(label):
         pos = name_to_pos.get(label)
@@ -313,9 +325,11 @@ def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
         estimate[label] = (sum(implied) / len(implied)) if implied else None
 
     # A node with no dated descendant has nothing to say for itself; it takes
-    # its parent's position plus its own branch, top-down. The same pass keeps
-    # children from preceding their parents, which both guarantees positive
-    # branch times and stops a noisy local estimate inverting the order.
+    # its parent's position plus what its own mutations represent at the
+    # clock rate, top-down, since with no tip date to defer to the mutation
+    # count is the only evidence there is. The same pass keeps children from
+    # preceding their parents, which both guarantees positive branch times
+    # and stops a noisy local estimate inverting the order.
     adjusted = {}
     branch_time_init = {}
     root_label = tree.root.label
@@ -337,7 +351,7 @@ def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
         parent = adjusted[node.parent.label]
         candidate = estimate.get(label)
         if candidate is None:
-            candidate = parent + floor
+            candidate = parent + max(floor, own_mutation_days(label))
         adjusted[label] = max(candidate, parent + floor)
         branch_time_init[label] = adjusted[label] - parent
 

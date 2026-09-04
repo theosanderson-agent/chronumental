@@ -188,8 +188,9 @@ def get_parser():
         default=3,
         type=int,
         help=
-        "For forming the prior, an expected minimum time between transmissions in days"
-    )
+        "Floor, in days, under each branch's starting duration when "
+        "--initialise clock is used. It has no effect under the default "
+        "tip-date initialisation.")
 
     parser.add_argument(
         '--only_use_full_dates',
@@ -544,14 +545,16 @@ def main():
     # so recent tips in a densely sampled clade are both numerous and badly
     # biased, and weighting each child subtree equally stops them outvoting a
     # sparse deep lineage.
-    branch_time_init, initial_root_date = (
-        input_mod.estimate_initial_times_local(
-            tree, name_to_pos, branch_distances_array, target_dates,
-            clock_rate,
-            mutation_floor=args.initial_branch_floor == 'mutations'))
-    initial_branch_times_array = jnp.asarray(
-        [branch_time_init[x] for x in names_init])
-    use_tip_dates = args.initialise == 'tip-dates'
+    initial_branch_times_array = None
+    initial_root_date = None
+    if args.initialise == 'tip-dates':
+        branch_time_init, initial_root_date = (
+            input_mod.estimate_initial_times_local(
+                tree, name_to_pos, branch_distances_array, target_dates,
+                clock_rate,
+                mutation_floor=args.initial_branch_floor == 'mutations'))
+        initial_branch_times_array = jnp.asarray(
+            [branch_time_init[x] for x in names_init])
 
     my_model = models.ChronumentalModel(
         path_sum=path_sum,
@@ -565,9 +568,8 @@ def main():
         variance_on_clock_rate=args.variance_on_clock_rate,
         quadrature_date_scale=not args.multiply_date_precision,
         root_date_prior_scale=args.root_date_prior_scale_days,
-        initial_branch_times_array=(initial_branch_times_array
-                                    if use_tip_dates else None),
-        initial_root_date=initial_root_date if use_tip_dates else None,
+        initial_branch_times_array=initial_branch_times_array,
+        initial_root_date=initial_root_date,
         ref_point_distance=ref_point_distance,
         expected_min_between_transmissions=args.
         expected_min_between_transmissions)
