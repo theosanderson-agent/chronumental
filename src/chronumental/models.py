@@ -1,57 +1,77 @@
-import numpyro
-import numpyro.distributions as dist
-import jax.numpy as jnp
-import numpy as onp
-from . import helpers
 import collections
 
+import jax.numpy as jnp
+import numpy as onp
+import numpyro
+import numpyro.distributions as dist
 
-class ChronumentalModelBase(object):
+from . import helpers
 
-    def __init__(self, **kwargs):
+
+class ChronumentalModel:
+    """The model and its delta guide: one free duration per branch, a root
+    date, and a clock rate that is either held at its estimate or fitted.
+
+    The horseshoe variant that once shared a base class with this is gone, so
+    there is one class and every input is an explicit argument.
+    """
+
+    def __init__(self,
+                 path_sum,
+                 terminal_indices,
+                 branch_distances_array,
+                 terminal_target_dates_array,
+                 terminal_target_errors_array,
+                 clock_rate,
+                 variance_dates,
+                 fix_clock_rate=True,
+                 variance_on_clock_rate=False,
+                 quadrature_date_scale=True,
+                 root_date_prior_scale=36500.0,
+                 initial_branch_times_array=None,
+                 initial_root_date=None,
+                 ref_point_distance=None,
+                 expected_min_between_transmissions=3):
         # Sums branch times from the root to every node, by pointer jumping.
         # See helpers.make_path_sum: this replaced a sparse matrix that cost
         # memory proportional to total path length over the tree.
-        self.path_sum = kwargs['path_sum']
-        self.terminal_indices = kwargs['terminal_indices']
-        self.branch_distances_array = kwargs['branch_distances_array']
-        self.terminal_target_dates_array = kwargs[
-            'terminal_target_dates_array']
-        self.terminal_target_errors_array = kwargs[
-            'terminal_target_errors_array']
-        self.ref_point_distance = kwargs['ref_point_distance']
+        self.path_sum = path_sum
+        self.terminal_indices = terminal_indices
+        self.branch_distances_array = branch_distances_array
+        self.terminal_target_dates_array = terminal_target_dates_array
+        self.terminal_target_errors_array = terminal_target_errors_array
+        self.clock_rate = clock_rate
+        self.variance_dates = variance_dates
+        self.fix_clock_rate = fix_clock_rate
+        self.variance_on_clock_rate = variance_on_clock_rate
+        self.quadrature_date_scale = quadrature_date_scale
+        self.root_date_prior_scale = root_date_prior_scale
 
-        self.initial_branch_times_array = kwargs.get(
-            'initial_branch_times_array')
-        self.initial_root_date = kwargs.get('initial_root_date')
-        self.set_initial_time()
-        self.terminal_names = kwargs['terminal_names']
-
-    def get_initial_root_date(self):
-        """Where the guide's root date starts.
-
-        From the initialiser when it supplied one, otherwise the older
-        estimate: one reference tip's divergence divided by the clock rate.
-        The root date is an unconstrained parameter in days and Adam moves
-        such a parameter by about the learning rate each step, so it travels
-        very little during a fit and this choice largely decides where it
-        ends up.
-        """
-        if self.initial_root_date is not None:
-            return self.initial_root_date
-        return (-helpers.DAYS_PER_YEAR * self.ref_point_distance /
-                self.clock_rate)
+        if initial_branch_times_array is not None:
+            # From the tip-date initialiser, which already applies its own
+            # positivity floor.
+            self.initial_time = initial_branch_times_array
+            self.initial_root_date = initial_root_date
+        else:
+            # --initialise clock: each branch at its mutations over the clock
+            # rate, floored at the minimum time between transmissions, and the
+            # root at one reference tip's divergence over that rate.
+            self.initial_time = jnp.maximum(
+                helpers.DAYS_PER_YEAR * branch_distances_array / clock_rate,
+                expected_min_between_transmissions)
+            self.initial_root_date = (-helpers.DAYS_PER_YEAR *
+                                      ref_point_distance / clock_rate)
 
     def _date_scale(self):
         """Standard deviation of the date likelihood, per tip, in days.
 
-        terminal_target_errors_array holds each tip's precision window: 1 for
-        a full date, 30 for month-only, 365 for year-only. Multiplying that by
-        --variance_dates conflates two different things. The window says how
-        wide the reported interval is; --variance_dates says how far a
-        reported date can be from the truth for other reasons. Multiplying
-        them means raising the second inflates the first, so at the current
-        default a year-only date is treated as uncertain to within ten years.
+        terminal_target_errors_array holds each tip's precision window in
+        days: 1 for a full date, the month's length for a month-only date,
+        the year's for a year-only one. Multiplying that by --variance_dates
+        conflates two different things. The window says how wide the reported
+        interval is; --variance_dates says how far a reported date can be from
+        the truth for other reasons. Multiplying them means raising the second
+        inflates the first.
 
         Adding them in quadrature keeps them separate: a full date gets about
         --variance_dates, a month-only date is dominated by its own window,
@@ -62,73 +82,16 @@ class ChronumentalModelBase(object):
         window = self.terminal_target_errors_array / 2.0
         return jnp.sqrt(self.variance_dates**2 + window**2)
 
-    def get_logging_results(self, params):
-        results = collections.OrderedDict()
-        times = self.get_branch_times(params)
-        new_dates = self.calc_dates(times, params['root_date_mu'])
-        results['date_cor'] = onp.corrcoef(self.terminal_target_dates_array,
-                                           new_dates)[0, 1]
-        results['date_error'] = onp.mean(
-            onp.abs(self.terminal_target_dates_array -
-                    new_dates))  # Average date error should be small
-        results['date_error_med'] = onp.median(
-            onp.abs(self.terminal_target_dates_array -
-                    new_dates))  # Average date error should be small
+    def node_dates(self, branch_times, root_date):
+        """Every node's predicted date, in days relative to the reference tip.
 
-        results['max_date_error'] = onp.max(
-            onp.abs(self.terminal_target_dates_array - new_dates)
-        )  # We know that there are some metadata errors, so there probably should be some big errors
-        results['length_cor'] = onp.corrcoef(
-            self.branch_distances_array,
-            times)[0, 1]  # This correlation should be relatively high
+        Shared by the likelihood, which indexes the tips out of it, and by the
+        early-stopping check, which watches all of it.
+        """
+        return self.path_sum(branch_times) + root_date
 
-        results['root_date'] = params['root_date_mu']
-        return results
-
-
-class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
-
-    def __init__(self, **kwargs):
-
-        self.clock_rate = kwargs['model_configuration']["clock_rate"]
-
-        self.variance_dates = kwargs['model_configuration']['variance_dates']
-        self.fix_clock_rate = kwargs['model_configuration'][
-            'fix_clock_rate']
-        self.variance_on_clock_rate = kwargs['model_configuration'][
-            'variance_on_clock_rate']
-        self.expected_min_between_transmissions = kwargs[
-            'model_configuration']['expected_min_between_transmissions']
-        self.quadrature_date_scale = kwargs['model_configuration'].get(
-            'quadrature_date_scale', True)
-        self.root_date_prior_scale = kwargs['model_configuration'].get(
-            'root_date_prior_scale', 36500.0)
-
-        super().__init__(**kwargs)
-
-    def get_logging_results(self, params):
-        results = super().get_logging_results(params)
-        results['mutation_rate'] = self.get_mutation_rate(params)
-        return results
-
-    def set_initial_time(self):
-        if self.initial_branch_times_array is not None:
-            # A small positive floor rather than the minimum time between
-            # transmissions: this value already reflects the tip dates, so it
-            # should not be dragged upward by a floor meant for the cruder
-            # mutations-over-rate estimate.
-            self.initial_time = jnp.maximum(self.initial_branch_times_array,
-                                            1e-3)
-            return
-        self.initial_time = jnp.maximum(
-            helpers.DAYS_PER_YEAR * (self.branch_distances_array) /
-            self.clock_rate,
-            self.expected_min_between_transmissions)
-
-    def calc_dates(self, branch_lengths_array, root_date):
-
-        all_node_dates = self.path_sum(branch_lengths_array)
-        return all_node_dates[self.terminal_indices] + root_date
+    def calc_dates(self, branch_times, root_date):
+        return self.node_dates(branch_times, root_date)[self.terminal_indices]
 
     def model(self):
         # Cauchy, not Normal. root_date is measured in days before the
@@ -143,45 +106,38 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
             "root_date",
             dist.Cauchy(loc=0.0, scale=self.root_date_prior_scale))
 
+        n_branches = self.branch_distances_array.shape[0]
         branch_times = numpyro.sample(
             "latent_time_length",
-            dist.Uniform(
-                low=onp.ones(self.branch_distances_array.shape[0]) * 0,
-                high=onp.ones(self.branch_distances_array.shape[0]) * 365 *
-                10000))
+            dist.Uniform(low=onp.zeros(n_branches),
+                         high=onp.ones(n_branches) * 365 * 10000))
 
         if self.fix_clock_rate:
             mutation_rate = self.clock_rate
         else:
             mutation_rate = numpyro.sample(
-                f"latent_mutation_rate",
+                "latent_mutation_rate",
                 dist.Uniform(low=0.0, high=self.clock_rate * 1000.0))
 
         expected_mutations = (mutation_rate * branch_times /
                               helpers.DAYS_PER_YEAR)
-        branch_distances = numpyro.sample("branch_distances",
-                                          dist.Poisson(expected_mutations),
-                                          obs=self.branch_distances_array)
+        numpyro.sample("branch_distances",
+                       dist.Poisson(expected_mutations),
+                       obs=self.branch_distances_array)
 
-        calced_dates = self.calc_dates(branch_times, root_date)
-
-        final_dates = numpyro.sample(f"final_dates",
-                                     dist.Normal(calced_dates,
-                                                 self._date_scale()),
-                                     obs=self.terminal_target_dates_array)
+        numpyro.sample("final_dates",
+                       dist.Normal(self.calc_dates(branch_times, root_date),
+                                   self._date_scale()),
+                       obs=self.terminal_target_dates_array)
 
     def guide(self):
-        root_date_mu = numpyro.param("root_date_mu",
-                                     self.get_initial_root_date())
-
-        root_date = numpyro.sample("root_date", dist.Delta(root_date_mu))
+        root_date_mu = numpyro.param("root_date_mu", self.initial_root_date)
+        numpyro.sample("root_date", dist.Delta(root_date_mu))
 
         time_length_mu = numpyro.param("time_length_mu",
                                        self.initial_time,
                                        constraint=dist.constraints.positive)
-
-        branch_times = numpyro.sample("latent_time_length",
-                                      dist.Delta(time_length_mu))
+        numpyro.sample("latent_time_length", dist.Delta(time_length_mu))
 
         # With the rate held fixed the model reads it straight off
         # self.clock_rate and never samples it, so the guide must not declare
@@ -193,20 +149,18 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         mutation_rate_mu = numpyro.param("mutation_rate_mu",
                                          self.clock_rate,
                                          constraint=dist.constraints.positive)
+        if not self.variance_on_clock_rate:
+            numpyro.sample("latent_mutation_rate", dist.Delta(mutation_rate_mu))
+            return
+
         mutation_rate_sigma = numpyro.param(
             "mutation_rate_sigma",
             self.clock_rate,
             constraint=dist.constraints.positive)
-
-        if not self.variance_on_clock_rate:
-            mutation_rate = numpyro.sample("latent_mutation_rate",
-                                           dist.Delta(mutation_rate_mu))
-        else:
-            mutation_rate = numpyro.sample(
-                f"latent_mutation_rate",
-                dist.TruncatedNormal(mutation_rate_mu,
-                                     mutation_rate_sigma,
-                                     low=0.0))
+        numpyro.sample(
+            "latent_mutation_rate",
+            dist.TruncatedNormal(mutation_rate_mu, mutation_rate_sigma,
+                                 low=0.0))
 
     def get_branch_times(self, params):
         return params['time_length_mu']
@@ -216,5 +170,21 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
             return self.clock_rate
         return params['mutation_rate_mu']
 
-
-models = {"DeltaGuideWithStrictLearntClock": DeltaGuideWithStrictLearntClock}
+    def get_logging_results(self, params):
+        results = collections.OrderedDict()
+        times = self.get_branch_times(params)
+        new_dates = self.calc_dates(times, params['root_date_mu'])
+        errors = onp.abs(self.terminal_target_dates_array - new_dates)
+        results['date_cor'] = onp.corrcoef(self.terminal_target_dates_array,
+                                           new_dates)[0, 1]
+        results['date_error'] = onp.mean(errors)
+        results['date_error_med'] = onp.median(errors)
+        # We know that there are some metadata errors, so there probably
+        # should be some big errors.
+        results['max_date_error'] = onp.max(errors)
+        # This correlation should be relatively high.
+        results['length_cor'] = onp.corrcoef(self.branch_distances_array,
+                                             times)[0, 1]
+        results['root_date'] = params['root_date_mu']
+        results['mutation_rate'] = self.get_mutation_rate(params)
+        return results

@@ -536,17 +536,6 @@ def main():
             "--variance_on_clock_rate needs a rate to put variance on, so it "
             "requires --floating_clock_rate.")
 
-    model_configuration = {
-        "clock_rate": clock_rate,
-        "variance_dates": args.variance_dates,
-        "expected_min_between_transmissions":
-        args.expected_min_between_transmissions,
-        "quadrature_date_scale": not args.multiply_date_precision,
-        "root_date_prior_scale": args.root_date_prior_scale_days,
-        "fix_clock_rate": not args.floating_clock_rate,
-        "variance_on_clock_rate": args.variance_on_clock_rate,
-    }
-
     # Every tip starts on its own date and each internal node takes the mean
     # over its children of the child's position less what that child's
     # mutations represent at the clock rate. Averaging over children rather
@@ -564,18 +553,24 @@ def main():
         [branch_time_init[x] for x in names_init])
     use_tip_dates = args.initialise == 'tip-dates'
 
-    my_model = models.DeltaGuideWithStrictLearntClock(
+    my_model = models.ChronumentalModel(
         path_sum=path_sum,
         terminal_indices=terminal_indices,
         branch_distances_array=branch_distances_array,
         terminal_target_dates_array=terminal_target_dates_array,
         terminal_target_errors_array=terminal_target_errors_array,
-        ref_point_distance=ref_point_distance,
-        model_configuration=model_configuration,
-        terminal_names=terminal_names,
+        clock_rate=clock_rate,
+        variance_dates=args.variance_dates,
+        fix_clock_rate=not args.floating_clock_rate,
+        variance_on_clock_rate=args.variance_on_clock_rate,
+        quadrature_date_scale=not args.multiply_date_precision,
+        root_date_prior_scale=args.root_date_prior_scale_days,
         initial_branch_times_array=(initial_branch_times_array
                                     if use_tip_dates else None),
-        initial_root_date=initial_root_date if use_tip_dates else None)
+        initial_root_date=initial_root_date if use_tip_dates else None,
+        ref_point_distance=ref_point_distance,
+        expected_min_between_transmissions=args.
+        expected_min_between_transmissions)
 
     print("Performing SVI:")
     optimiser = optim.ClippedAdam(
