@@ -113,7 +113,12 @@ def get_parser():
         default=0.3,
         type=float,
         help=
-        "Scale factor for date distribution. Essentially a measure of how uncertain we think the measured dates are."
+        ("How uncertain the reported tip dates are taken to be, in days: the "
+         "standard deviation of the date likelihood for a tip with a full "
+         "date. For a tip dated only to a month or a year this is combined "
+         "in quadrature with half the width of that interval, so an "
+         "imprecise date is dominated by its own window and raising this "
+         "value does not inflate it.")
     )
 
     parser.add_argument(
@@ -206,6 +211,17 @@ def get_parser():
         help="Unit for the output branch lengths on the time tree.",
         choices=["days", "years"],
         default="days")
+
+    parser.add_argument(
+        '--multiply_date_precision',
+        action='store_true',
+        help=
+        "Restore the old date-likelihood scale, --variance_dates multiplied "
+        "by each tip's precision window, rather than the two combined in "
+        "quadrature. Multiplying conflates the width of the reported interval "
+        "with how far a reported date can be from the truth for other "
+        "reasons, so raising one inflates the other: at the default it made a "
+        "year-only date uncertain to within ten years.")
 
     parser.add_argument(
         '--variance_on_clock_rate',
@@ -466,6 +482,7 @@ def main():
         "variance_dates": args.variance_dates,
         "expected_min_between_transmissions":
         args.expected_min_between_transmissions,
+        "quadrature_date_scale": not args.multiply_date_precision,
         "enforce_exact_clock": args.enforce_exact_clock,
         "variance_on_clock_rate": args.variance_on_clock_rate,
     }
