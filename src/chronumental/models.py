@@ -24,6 +24,26 @@ class ChronumentalModelBase(object):
         self.set_initial_time()
         self.terminal_names = kwargs['terminal_names']
 
+    def _date_scale(self):
+        """Standard deviation of the date likelihood, per tip, in days.
+
+        terminal_target_errors_array holds each tip's precision window: 1 for
+        a full date, 30 for month-only, 365 for year-only. Multiplying that by
+        --variance_dates conflates two different things. The window says how
+        wide the reported interval is; --variance_dates says how far a
+        reported date can be from the truth for other reasons. Multiplying
+        them means raising the second inflates the first, so at the current
+        default a year-only date is treated as uncertain to within ten years.
+
+        Adding them in quadrature keeps them separate: a full date gets about
+        --variance_dates, a month-only date is dominated by its own window,
+        and raising --variance_dates no longer multiplies the window.
+        """
+        if not self.quadrature_date_scale:
+            return self.variance_dates * self.terminal_target_errors_array
+        window = self.terminal_target_errors_array / 2.0
+        return jnp.sqrt(self.variance_dates**2 + window**2)
+
     def get_logging_results(self, params):
         results = collections.OrderedDict()
         times = self.get_branch_times(params)
@@ -61,6 +81,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
             'variance_on_clock_rate']
         self.expected_min_between_transmissions = kwargs[
             'model_configuration']['expected_min_between_transmissions']
+        self.quadrature_date_scale = kwargs['model_configuration'].get(
+            'quadrature_date_scale', True)
 
         super().__init__(**kwargs)
 
@@ -107,9 +129,8 @@ class DeltaGuideWithStrictLearntClock(ChronumentalModelBase):
         calced_dates = self.calc_dates(branch_times, root_date)
 
         final_dates = numpyro.sample(f"final_dates",
-                                     dist.Normal(
-                                         calced_dates, self.variance_dates *
-                                         self.terminal_target_errors_array),
+                                     dist.Normal(calced_dates,
+                                                 self._date_scale()),
                                      obs=self.terminal_target_dates_array)
 
     def guide(self):
