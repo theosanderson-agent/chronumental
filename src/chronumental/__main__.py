@@ -5,6 +5,7 @@ GPU_REQUESTED = "--use_gpu" in sys.argv
 if not GPU_REQUESTED:
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 import datetime
+import math
 
 import pandas as pd
 import jax.numpy as jnp
@@ -267,13 +268,19 @@ def main():
 
     name_to_pos = {x: i for i, x in enumerate(names_init)}
 
-    rows, cols = input_mod.get_rows_and_cols_of_sparse_matrix(
-        tree, terminal_name_to_pos, name_to_pos)
-
-    rows = jnp.asarray(rows)
-    print("Rows array created")
-    cols = jnp.asarray(cols)
-    print("Cols array created")
+    # Root-to-tip sums are computed by pointer jumping over a parent-index
+    # array rather than a sparse matrix of (node, ancestor) pairs. The sparse
+    # form cost memory proportional to the total path length over the tree --
+    # 116 million entries and 2.6 GB on a 300k-tip tree, the largest single
+    # allocation in a run. See helpers.make_path_sum.
+    parent_indices, root_index, max_depth = input_mod.get_parent_indices(
+        tree, name_to_pos)
+    n_rounds = max(1, int(math.ceil(math.log2(max_depth + 1))))
+    print(f"Tree depth {max_depth}; using {n_rounds} pointer-jumping rounds")
+    path_sum = helpers.make_path_sum(jnp.asarray(parent_indices), n_rounds,
+                                     root_index)
+    terminal_indices = jnp.asarray(
+        [name_to_pos[name] for name in terminal_names], dtype=jnp.int32)
 
     if args.clock:
         print(f"Using clock rate {args.clock}")
@@ -281,10 +288,7 @@ def main():
         if args.treat_mutation_units_as_normalised_to_genome_size:
             clock_rate = clock_rate * args.treat_mutation_units_as_normalised_to_genome_size
     else:
-        root_to_tip = helpers.do_branch_matmul(rows,
-                                               cols,
-                                               branch_distances_array,
-                                               final_size=len(terminal_names))
+        root_to_tip = path_sum(branch_distances_array)[terminal_indices]
 
         print(
             "No clock rate specified, performing root-to-tip regression to estimate starting value"
@@ -318,8 +322,8 @@ def main():
     }
 
     my_model = models.DeltaGuideWithStrictLearntClock(
-        rows=rows,
-        cols=cols,
+        path_sum=path_sum,
+        terminal_indices=terminal_indices,
         branch_distances_array=branch_distances_array,
         terminal_target_dates_array=terminal_target_dates_array,
         terminal_target_errors_array=terminal_target_errors_array,
