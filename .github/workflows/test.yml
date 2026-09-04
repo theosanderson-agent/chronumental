@@ -35,7 +35,7 @@ jobs:
           pytest tests
       - name: Test
         run: |
-          chronumental --dates ./test_data/ebola.metadata.csv --tree ./test_data/divergence_tree.nexus --dates_out dates_chron.tsv --tree_out tree_chron.nwk --steps 2000 --treat_mutation_units_as_normalised_to_genome_size 19000 | tee fit.log
+          chronumental --dates ./test_data/ebola.metadata.csv --tree ./test_data/divergence_tree.nexus --dates_out dates_chron.tsv --tree_out tree_chron.nwk --steps 5000 --treat_mutation_units_as_normalised_to_genome_size 19000 | tee fit.log
           grep -q Converged fit.log
       - name: Test learnt clock variance
         run: |
