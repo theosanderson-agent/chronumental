@@ -79,33 +79,6 @@ def get_parser():
         type=float)
 
     parser.add_argument(
-        '--clock_estimator',
-        choices=('theil-sen', 'phylogenetic'),
-        default='theil-sen',
-        help=(
-            "Estimator for the starting clock rate when --clock is omitted. "
-            "'theil-sen' is a robust root-to-tip regression that treats tips "
-            "as independent observations even where they share ancestry. "
-            "'phylogenetic' instead uses Felsenstein's independent contrasts, "
-            "which corrects for that shared ancestry. Contrasts are the more "
-            "principled estimator, but they fit a lower rate, and since the "
-            "root is the node furthest from any dated tip it is the most "
-            "sensitive to that: on deep trees the lower rate can push the "
-            "root implausibly far back. 'phylogenetic' does better on "
-            "shallow, densely sampled trees; 'theil-sen' is the safer "
-            "default across a range of tree depths."))
-
-    parser.add_argument(
-        '--phylogenetic_clock_variance_floor',
-        default=5.0,
-        type=float,
-        help=(
-            "Minimum per-branch mutation variance used by "
-            "--clock_estimator phylogenetic. The default prevents branches "
-            "with very few observed mutations from being treated as nearly "
-            "noiseless by the Gaussian contrast approximation."))
-
-    parser.add_argument(
         '--clock_filter_iqd',
         default=0.0,
         type=float,
@@ -540,19 +513,9 @@ def main():
         print(
             "No clock rate specified, performing root-to-tip regression to estimate starting value"
         )
-        if args.clock_estimator == 'phylogenetic':
-            clock_rate = input_mod.estimate_clock_rate_phylogenetic(
-                tree, name_to_pos, np.asarray(branch_distances_array),
-                np.asarray(terminal_indices),
-                np.asarray(terminal_target_dates_array),
-                np.asarray(terminal_target_errors_array),
-                variance_floor=args.phylogenetic_clock_variance_floor)
-            print(f"Phylogenetic clock regression: got rate of: {clock_rate}")
-        else:
-            clock_rate = theil_sen_clock_rate(terminal_target_dates_array,
-                                              root_to_tip)
-            print(
-                f"Theil-Sen root-to-tip regression: got rate of: {clock_rate}")
+        clock_rate = theil_sen_clock_rate(terminal_target_dates_array,
+                                          root_to_tip)
+        print(f"Theil-Sen root-to-tip regression: got rate of: {clock_rate}")
         if clock_rate < 0:
             raise ValueError(
                 "ERROR: Root-to-tip regression predicted a negative mutation rate. If your dataset is correct you will need to manually specify an initial clock rate with --clock."

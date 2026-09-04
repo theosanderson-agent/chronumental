@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import datetime
-import math
 from alive_progress import alive_it
 import treeswift
 import xopen
@@ -343,114 +342,6 @@ def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
         branch_time_init[label] = adjusted[label] - parent
 
     return branch_time_init, adjusted[root_label]
-
-
-def estimate_clock_rate_phylogenetic(tree, name_to_position, branch_distances,
-                                     target_indices, target_dates, target_errors,
-                                     variance_floor=5.0):
-    """Estimate a clock with phylogenetically independent contrasts.
-
-    Root-to-tip regression treats every tip as an independent observation,
-    even though related tips share most of their mutation path.  Independent
-    contrasts remove that shared path at each split, then fit one slope through
-    the origin to the resulting date/divergence contrasts.
-
-    Observed mutation count is used as the branch's Poisson variance.  Counts
-    below ``variance_floor`` are floored because a zero observed count does not
-    imply zero sampling variance, and because the Gaussian contrast
-    approximation is unreliable for very small counts.  Date precision is
-    handled as uniform interval uncertainty and subtracted from the date
-    contrast sum of squares, which corrects attenuation from month/year-only
-    observations.
-
-    The result is in branch-distance units per year.  Runtime and memory are
-    linear in the number of nodes.
-    """
-    if variance_floor <= 0:
-        raise ValueError("Phylogenetic clock variance floor must be positive")
-
-    n_nodes = len(branch_distances)
-    cumulative = np.empty(n_nodes, dtype=np.float64)
-    for node in helpers.preorder_traversal(tree.root):
-        index = name_to_position[node.label]
-        if node.parent is None:
-            cumulative[index] = 0.0
-        else:
-            cumulative[index] = (
-                cumulative[name_to_position[node.parent.label]] +
-                branch_distances[index])
-
-    present = np.zeros(n_nodes, dtype=bool)
-    x_state = np.empty(n_nodes, dtype=np.float64)
-    y_state = np.empty(n_nodes, dtype=np.float64)
-    tree_variance = np.zeros(n_nodes, dtype=np.float64)
-    date_variance = np.zeros(n_nodes, dtype=np.float64)
-    target_indices = np.asarray(target_indices, dtype=np.int32)
-    present[target_indices] = True
-    x_state[target_indices] = target_dates
-    y_state[target_indices] = cumulative[target_indices]
-    # A date reported to a window of width w has variance w^2 / 12 when its
-    # unknown position in that interval is uniform.
-    date_variance[target_indices] = (
-        np.asarray(target_errors, dtype=np.float64)**2 / 12.0)
-
-    numerator = 0.0
-    denominator = 0.0
-    for node in tree.traverse_postorder():
-        if node.is_leaf():
-            continue
-        index = name_to_position[node.label]
-        usable_children = [child for child in node.children
-                           if present[name_to_position[child.label]]]
-        if not usable_children:
-            continue
-
-        first = name_to_position[usable_children[0].label]
-        x = x_state[first]
-        y = y_state[first]
-        variance = tree_variance[first] + max(
-            float(branch_distances[first]), variance_floor)
-        measurement_variance = date_variance[first]
-
-        # Sequential combination also supports polytomies. Each combination
-        # yields an independent contrast and a variance-weighted state for the
-        # clade above it, exactly as in Felsenstein's pruning construction.
-        for child in usable_children[1:]:
-            child_index = name_to_position[child.label]
-            other_x = x_state[child_index]
-            other_y = y_state[child_index]
-            other_variance = tree_variance[child_index] + max(
-                float(branch_distances[child_index]), variance_floor)
-            other_measurement_variance = date_variance[child_index]
-            contrast_variance = variance + other_variance
-            x_contrast = (x - other_x) / math.sqrt(contrast_variance)
-            y_contrast = (y - other_y) / math.sqrt(contrast_variance)
-            numerator += x_contrast * y_contrast
-            denominator += (
-                x_contrast**2 -
-                (measurement_variance + other_measurement_variance) /
-                contrast_variance)
-
-            first_weight = other_variance / contrast_variance
-            other_weight = variance / contrast_variance
-            x = first_weight * x + other_weight * other_x
-            y = first_weight * y + other_weight * other_y
-            measurement_variance = (
-                first_weight**2 * measurement_variance +
-                other_weight**2 * other_measurement_variance)
-            variance = variance * other_variance / contrast_variance
-
-        present[index] = True
-        x_state[index] = x
-        y_state[index] = y
-        tree_variance[index] = variance
-        date_variance[index] = measurement_variance
-
-    if denominator <= 0 or numerator <= 0:
-        raise ValueError(
-            "Phylogenetic clock regression had insufficient positive "
-            "temporal signal; use --clock or --clock_estimator theil-sen")
-    return helpers.DAYS_PER_YEAR * numerator / denominator
 
 
 def get_parent_indices(tree, name_to_pos):
