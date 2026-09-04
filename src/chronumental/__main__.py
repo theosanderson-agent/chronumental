@@ -170,7 +170,8 @@ def get_parser():
         type=int,
         help=
         "Number of consecutive checks (each --convergence_check_every steps apart) "
-        "that must be below --convergence_tol_days before stopping early.")
+        "that must satisfy both --convergence_tol_days and "
+        "--convergence_rate_tol before stopping early.")
 
     parser.add_argument(
         '--disable_early_stopping',
@@ -349,33 +350,74 @@ def theil_sen_clock_rate(terminal_target_dates_array, root_to_tip):
     return slope_per_day * helpers.DAYS_PER_YEAR
 
 
-def _make_convergence_check(path_sum):
-    """Build the two jitted functions behind the early-stopping convergence
-    check.
+class ConvergenceMonitor:
+    """Early stopping on the fit's predicted output rather than on the loss.
 
-    `node_days` computes every node's predicted date on device, reusing the
-    same pointer-jumping path sum the model uses for terminal dates.
-    `mean_abs_change` reduces two such arrays' difference to a single scalar,
-    also on device, so a check costs one scalar host sync rather than an
-    O(nodes) transfer and a walk in Python.
+    Every `check_every` steps this computes every node's predicted date on
+    device, using the same path sum the model uses, and reduces the difference
+    from the previous check to one scalar there. So a check costs one scalar
+    host sync regardless of tree size and rides along at chunk boundaries,
+    which are already the sync point.
 
-    Because the path sum already produces every node's date, the check needs
-    no structure of its own.
+    Two things have to settle for `patience` consecutive checks: the mean
+    absolute change in node dates must fall below `tol_days`, and the relative
+    change in the fitted clock rate below `rate_tol`. The dates alone are not
+    enough: they can look stable while the rate is still descending, and the
+    dates are more sensitive to the rate than this test is. With the rate held
+    fixed, the default, the second criterion is met trivially.
 
-    Kept as two functions, rather than one that also does the comparison,
-    because there is no previous value to compare against on a check's first
-    call.
+    The check watches the current parameters, whereas the output uses the
+    best-loss parameters. Near convergence the two agree to well within the
+    tolerance.
     """
 
-    @jax.jit
-    def node_days(branch_times, root_date):
-        return path_sum(branch_times) + root_date
+    def __init__(self, model, tol_days, rate_tol, patience, check_every):
+        self.model = model
+        self.tol_days = tol_days
+        self.rate_tol = rate_tol
+        self.patience = patience
+        self.check_every = check_every
+        self.last_check_step = 0
+        self.previous_node_days = None
+        self.previous_rate = None
+        self.consecutive = 0
+        self.last_change_days = None
 
-    @jax.jit
-    def mean_abs_change(current_node_days, previous_node_days):
-        return jnp.mean(jnp.abs(current_node_days - previous_node_days))
+    def update(self, step, params):
+        """Run a check if one is due at `step`; True once converged."""
+        if step - self.last_check_step < self.check_every:
+            return False
+        self.last_check_step = step
+        node_days = self.model.node_dates(self.model.get_branch_times(params),
+                                          params['root_date_mu'])
+        converged = False
+        if self.previous_node_days is not None:
+            # The only place a check touches the host: one scalar.
+            self.last_change_days = float(
+                jnp.mean(jnp.abs(node_days - self.previous_node_days)))
+            rate = float(self.model.get_mutation_rate(params))
+            if self.previous_rate is None or self.previous_rate == 0:
+                rate_settled = False
+            else:
+                rate_settled = (abs(rate - self.previous_rate) /
+                                abs(self.previous_rate) < self.rate_tol)
+            self.previous_rate = rate
+            if self.last_change_days < self.tol_days and rate_settled:
+                self.consecutive += 1
+            else:
+                self.consecutive = 0
+            converged = self.consecutive >= self.patience
+        self.previous_node_days = node_days
+        return converged
 
-    return node_days, mean_abs_change
+    def describe(self, step, num_steps):
+        return (f"Converged: mean absolute change in predicted node dates was "
+                f"{self.last_change_days:.4f} days (< --convergence_tol_days "
+                f"{self.tol_days}) and the clock rate moved by less than "
+                f"--convergence_rate_tol {self.rate_tol}, for "
+                f"{self.consecutive} consecutive checks ~{self.check_every} "
+                f"steps apart. Stopping early at step {step} (of {num_steps} "
+                f"requested).")
 
 
 def prepend_to_file_name(full_path, to_prepend):
@@ -389,6 +431,10 @@ def prepend_to_file_name(full_path, to_prepend):
 def main():
     parser = get_parser()
     args = parser.parse_args()
+    if args.convergence_patience < 1:
+        parser.error("--convergence_patience must be at least 1")
+    if args.convergence_check_every < 1:
+        parser.error("--convergence_check_every must be at least 1")
 
     if args.use_wandb:
         try:
@@ -579,9 +625,7 @@ def main():
         args.lr) if args.clipped_adam else optim.Adam(args.lr)
     svi = SVI(my_model.model, my_model.guide, optimiser, Trace_ELBO())
     state = svi.init(jax.random.PRNGKey(0))
-
     num_steps = args.steps
-    was_interrupted = False
 
     # Run the fitting steps in chunks under jax.lax.scan rather than one at a
     # time from Python. The dominant cost of the old loop was not the gradient
@@ -590,10 +634,10 @@ def main():
     # transfer. Copying the whole parameter set off the device whenever the
     # loss improved, which early in fitting is most steps, cost more again.
     #
-    # Chunk boundaries are chosen so the logged step numbers are unchanged
-    # (step 0, then every tenth, then the last), because that progress output
-    # is something people watch. Best-loss parameters are tracked on device
-    # with jnp.where instead of being copied to the host.
+    # Chunk boundaries fall on step 0, then every tenth step, then the last,
+    # so logging once per chunk gives the same lines as the old per-step loop
+    # did. Best-loss parameters are tracked on device with jnp.where instead
+    # of being copied to the host.
     #
     # One behaviour change: Ctrl-C is only noticed between chunks, so it now
     # stops within CHUNK_SIZE steps rather than after exactly one. A gradient
@@ -602,161 +646,86 @@ def main():
 
     def scan_body(carry, _):
         state, lowest_loss, best_params = carry
+        # svi.update returns the loss at the parameters it was given together
+        # with the state after the step, so read the parameters first to pair
+        # each loss with the parameters that produced it. Pairing it with the
+        # updated ones let the first exploding step, whose own loss is still
+        # finite, install its infinite parameters as the best.
+        params = svi.get_params(state)
         state, loss = svi.update(state)
-        current_params = svi.get_params(state)
         # A NaN loss compares False here, so NaN steps never become "best".
         improved = loss < lowest_loss
-        new_lowest_loss = jnp.where(improved, loss, lowest_loss)
-        new_best_params = jax.tree_util.tree_map(
+        lowest_loss = jnp.where(improved, loss, lowest_loss)
+        best_params = jax.tree_util.tree_map(
             lambda best, current: jnp.where(improved, current, best),
-            best_params, current_params)
-        return (state, new_lowest_loss, new_best_params), (loss,
-                                                           jnp.isnan(loss))
+            best_params, params)
+        return (state, lowest_loss, best_params), loss
 
     def run_chunk(state, lowest_loss, best_params, length):
-        carry, (losses, nans) = jax.lax.scan(scan_body,
-                                             (state, lowest_loss, best_params),
-                                             xs=None,
-                                             length=length)
-        return carry + (losses, nans)
+        carry, losses = jax.lax.scan(scan_body,
+                                     (state, lowest_loss, best_params),
+                                     xs=None,
+                                     length=length)
+        return carry + (losses, )
 
     run_chunk = jax.jit(run_chunk, static_argnames=("length", ))
 
-    lowest_loss = jnp.inf
+    # A concrete float32 rather than a Python inf: the weakly typed Python
+    # value would come back as float32 after the first chunk and force any
+    # later chunk of the same length to recompile.
+    lowest_loss = jnp.array(jnp.inf, dtype=jnp.float32)
     # Seeded with the initial parameters, so this is never unset even if every
     # step produces a NaN loss.
     best_params = svi.get_params(state)
 
-    # Early-stopping convergence check: has the fit's predicted output
-    # (root date plus every node's cumulative branch time) actually stopped
-    # moving? This is a better stopping signal than the loss, which can keep
-    # crawling long after the dates a user would see have settled -- see
-    # _make_convergence_check for how this is kept cheap on a huge tree.
-    check_convergence = (not args.disable_early_stopping
-                         and args.convergence_tol_days > 0)
-    convergence_check_every = max(args.convergence_check_every, 1)
-    if check_convergence:
-        convergence_node_days_fn, convergence_mean_abs_change_fn = (
-            _make_convergence_check(path_sum))
-    previous_node_days = None
-    consecutive_converged = 0
-    previous_rate = None
-    checks_done = 0
+    monitor = None
+    if not args.disable_early_stopping and args.convergence_tol_days > 0:
+        monitor = ConvergenceMonitor(my_model, args.convergence_tol_days,
+                                     args.convergence_rate_tol,
+                                     args.convergence_patience,
+                                     args.convergence_check_every)
+
+    def log_results(step, loss, params):
+        results = my_model.get_logging_results(params)
+        results['step'] = step
+        results['loss'] = loss
+        results.move_to_end('loss', last=False)
+        results.move_to_end('step', last=False)
+        print("\t".join([
+            f"{name}:{value:.4f}" if "." in str(value) else f"{name}:{value}"
+            for name, value in results.items()
+        ]))
+        if args.use_wandb:
+            wandb.log(results)
 
     step = -1
+    was_interrupted = False
     try:
-        remaining = num_steps
-        first_chunk = True
-        while remaining > 0:
+        while step + 1 < num_steps:
             # The first chunk is a single step so that step 0 is logged, as it
             # was before.
-            this_chunk_size = 1 if first_chunk else min(CHUNK_SIZE, remaining)
-            first_chunk = False
-
-            state, lowest_loss, best_params, losses, nans = run_chunk(
-                state, lowest_loss, best_params, length=this_chunk_size)
-
+            length = 1 if step < 0 else min(CHUNK_SIZE, num_steps - step - 1)
+            state, lowest_loss, best_params, losses = run_chunk(
+                state, lowest_loss, best_params, length=length)
             # The only host sync per chunk, against several per step before.
             losses = np.asarray(losses)
-            nans = np.asarray(nans)
-            step += this_chunk_size
-            remaining -= this_chunk_size
+            step += length
 
-            if nans.any():
+            if np.isnan(losses).any():
                 print(
                     "There may have been a 'gradient explosion'. This run may not be successful (you can stop it with ctrl-C). Suggested troubleshooting steps: specify a low learning rate e.g. '--lr 0.005'."
                 )
 
-            if check_convergence:
-                # Only check at chunk boundaries -- chunks are already the
-                # sync point, so this rides along rather than adding one.
-                # `step // convergence_check_every` increasing means a
-                # multiple of it has been crossed since the last chunk; using
-                # "crossed" rather than "step % check_every == 0" means this
-                # is correct even when convergence_check_every is not a
-                # multiple of the chunk size.
-                new_checks_done = step // convergence_check_every
-                if new_checks_done > checks_done:
-                    checks_done = new_checks_done
-                    current_params = svi.get_params(state)
-                    current_node_days = convergence_node_days_fn(
-                        my_model.get_branch_times(current_params),
-                        current_params['root_date_mu'])
-                    if previous_node_days is not None:
-                        # The only place a convergence check touches the
-                        # host: one scalar, regardless of tree size, because
-                        # the per-node dates and their comparison both ran
-                        # on device inside the jitted functions above.
-                        mean_abs_change_days = float(
-                            convergence_mean_abs_change_fn(
-                                current_node_days, previous_node_days))
-                        # The dates settling is necessary but not
-                        # sufficient. They can look stable while the clock
-                        # rate is still descending, and the dates are far
-                        # more sensitive to the rate than this test is: on
-                        # one real dataset a 5% rate error moved the median
-                        # disagreement with treetime by 3 days. So require
-                        # the rate to have stopped moving too, as a relative
-                        # change, since its magnitude varies with the units
-                        # the tree is in.
-                        current_rate = float(
-                            my_model.get_mutation_rate(current_params))
-                        if previous_rate is None or previous_rate == 0:
-                            rate_settled = False
-                        else:
-                            rate_settled = (
-                                abs(current_rate - previous_rate) /
-                                abs(previous_rate) <
-                                args.convergence_rate_tol)
-                        previous_rate = current_rate
-                        if (mean_abs_change_days < args.convergence_tol_days
-                                and rate_settled):
-                            consecutive_converged += 1
-                        else:
-                            consecutive_converged = 0
-                        if consecutive_converged >= args.convergence_patience:
-                            print(
-                                f"Converged: mean absolute change in "
-                                f"predicted node dates was "
-                                f"{mean_abs_change_days:.4f} days (< "
-                                f"--convergence_tol_days "
-                                f"{args.convergence_tol_days}) for "
-                                f"{consecutive_converged} consecutive checks "
-                                f"~{convergence_check_every} steps apart. "
-                                f"Stopping early at step {step} "
-                                f"(of {num_steps} requested).")
-                            loss = losses[-1]
-                            results = my_model.get_logging_results(
-                                current_params)
-                            results['step'] = step
-                            results['loss'] = loss
-                            results.move_to_end('loss', last=False)
-                            results.move_to_end('step', last=False)
-                            print("\t".join([
-                                f"{name}:{value:.4f}"
-                                if "." in str(value) else f"{name}:{value}"
-                                for name, value in results.items()
-                            ]))
-                            break
-                    previous_node_days = current_node_days
-            if step % 10 == 0 or step == num_steps - 1:
-                loss = losses[-1]
-                results = my_model.get_logging_results(svi.get_params(state))
-                results['step'] = step
-                results['loss'] = loss
-                results.move_to_end('loss', last=False)
-                results.move_to_end('step', last=False)
-
-                result_string = "\t".join([
-                    f"{name}:{value:.4f}"
-                    if "." in str(value) else f"{name}:{value}"
-                    for name, value in results.items()
-                ])
-                print(result_string)
-                if args.use_wandb:
-                    wandb.log(results)
+            current_params = svi.get_params(state)
+            converged = (monitor is not None
+                         and monitor.update(step, current_params))
+            if converged:
+                print(monitor.describe(step, num_steps))
+            log_results(step, losses[-1], current_params)
+            if converged:
+                break
     except KeyboardInterrupt:
-        print(f"Interrupting model fitting after {step} steps.")
+        print(f"Interrupting model fitting after {step + 1} steps.")
         was_interrupted = True
     print("Fit completed. Extracting parameters.")
 
@@ -764,12 +733,14 @@ def main():
         params = svi.get_params(state)
     else:
         params = best_params
-    to_save = ""
+    to_save = "y"
     if was_interrupted:
-        while to_save.strip().lower() not in ['y', 'n']:
-            to_save = input("Do you want to save the results? [y/n]")
-    else:
-        to_save = "y"
+        if sys.stdin.isatty():
+            to_save = ""
+            while to_save.strip().lower() not in ['y', 'n']:
+                to_save = input("Do you want to save the results? [y/n]")
+        else:
+            print("No terminal to ask on, so saving the results so far.")
     if to_save.strip().lower() == "y":
         # Reuse the tree already parsed rather than reading the file again.
         # Setup labelled every node; the ones it invented are dropped again
