@@ -89,7 +89,8 @@ def test_mutations_are_converted_at_the_clock_rate():
     for rate in (10.0, 20.0):
         _, root_date, _ = build(newick, dates, clock_rate=rate)
         # 20 mutations at `rate` per year is 20 * 365.25 / rate days.
-        assert root_date == pytest.approx(1000.0 - 20 * 365.25 / rate, abs=1e-4)
+        assert root_date == pytest.approx(1000.0 - 20 * 365.25 / rate,
+                                          abs=1e-4)
 
 
 def test_an_undated_tip_is_placed_from_its_parent_not_dropped():

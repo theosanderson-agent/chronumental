@@ -170,12 +170,12 @@ def get_datetime_and_error(x):
             pass
 
         try:
-            return _period_midpoint(
-                datetime.datetime.strptime(x, '%Y-%m'), months=1)
+            return _period_midpoint(datetime.datetime.strptime(x, '%Y-%m'),
+                                    months=1)
         except ValueError:
             try:
-                return _period_midpoint(
-                    datetime.datetime.strptime(x, '%Y'), years=1)
+                return _period_midpoint(datetime.datetime.strptime(x, '%Y'),
+                                        years=1)
             except ValueError:
                 if x != "" and x != "?":
                     print(
@@ -278,8 +278,12 @@ def get_initial_branch_lengths_and_name_all_nodes(tree):
     return initial_branch_lengths, invented_labels
 
 
-def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
-                                 target_dates, clock_rate, floor_days=0.01,
+def estimate_initial_times_local(tree,
+                                 name_to_pos,
+                                 branch_distances_array,
+                                 target_dates,
+                                 clock_rate,
+                                 floor_days=0.01,
                                  mutation_floor=False):
     """Position every node from its immediate children, tips on their dates.
 
@@ -341,8 +345,8 @@ def estimate_initial_times_local(tree, name_to_pos, branch_distances_array,
         # than the mutation count allows -- which inflates the tree wherever
         # the clock estimate is off. mutation_floor=False keeps only the
         # positivity floor and lets the tip-date estimate stand.
-        floor = (max(floor_days, own_mutation_days(label)) if mutation_floor
-                 else floor_days)
+        floor = (max(floor_days, own_mutation_days(label))
+                 if mutation_floor else floor_days)
         if node.parent is None:
             adjusted[label] = (estimate.get(label)
                                if estimate.get(label) is not None else 0.0)

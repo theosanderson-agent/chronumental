@@ -103,8 +103,8 @@ class ChronumentalModel:
         # tree far deeper than the scale costs a little rather than a lot,
         # and the scale stops having to be guessed from the tree's depth.
         root_date = numpyro.sample(
-            "root_date",
-            dist.Cauchy(loc=0.0, scale=self.root_date_prior_scale))
+            "root_date", dist.Cauchy(loc=0.0,
+                                     scale=self.root_date_prior_scale))
 
         n_branches = self.branch_distances_array.shape[0]
         branch_times = numpyro.sample(
@@ -150,7 +150,8 @@ class ChronumentalModel:
                                          self.clock_rate,
                                          constraint=dist.constraints.positive)
         if not self.variance_on_clock_rate:
-            numpyro.sample("latent_mutation_rate", dist.Delta(mutation_rate_mu))
+            numpyro.sample("latent_mutation_rate",
+                           dist.Delta(mutation_rate_mu))
             return
 
         mutation_rate_sigma = numpyro.param(
@@ -159,7 +160,8 @@ class ChronumentalModel:
             constraint=dist.constraints.positive)
         numpyro.sample(
             "latent_mutation_rate",
-            dist.TruncatedNormal(mutation_rate_mu, mutation_rate_sigma,
+            dist.TruncatedNormal(mutation_rate_mu,
+                                 mutation_rate_sigma,
                                  low=0.0))
 
     def get_branch_times(self, params):

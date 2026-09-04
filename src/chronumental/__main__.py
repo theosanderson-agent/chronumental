@@ -110,8 +110,7 @@ def get_parser():
          "date as known to within about seven hours, which over-constrains "
          "the fit: the tip dates then pin each root-to-tip total so tightly "
          "that the mutation counts have almost no say in how that total is "
-         "divided among the branches on the path.")
-    )
+         "divided among the branches on the path."))
 
     parser.add_argument(
         '--steps',
@@ -123,8 +122,7 @@ def get_parser():
         "changing by more than --convergence_tol_days, since extra steps beyond "
         "that point change the answer only in ways too small to matter. Pass "
         "--disable_early_stopping to always run exactly this many steps, e.g. "
-        "for a reproducible step count."
-    )
+        "for a reproducible step count.")
 
     parser.add_argument('--lr',
                         default=0.03,
@@ -140,8 +138,7 @@ def get_parser():
          "settled, for early stopping. Checked alongside "
          "--convergence_tol_days because node dates can look stable while "
          "the rate is still moving, and the dates are more sensitive to the "
-         "rate than a test on the dates alone can detect.")
-    )
+         "rate than a test on the dates alone can detect."))
 
     parser.add_argument(
         '--convergence_tol_days',
@@ -156,8 +153,7 @@ def get_parser():
          "cost 3 days of median disagreement with treetime, and tightening "
          "this from 1 to 0.1 took that disagreement from 11.3 days to 8.1. "
          "Simulated benchmarks improve too, from 14.9 to 14.1 days mean "
-         "absolute error, for about 11%% more runtime.")
-    )
+         "absolute error, for about 11%% more runtime."))
 
     parser.add_argument(
         '--convergence_check_every',
@@ -189,8 +185,7 @@ def get_parser():
         '--expected_min_between_transmissions',
         default=3,
         type=int,
-        help=
-        "Floor, in days, under each branch's starting duration when "
+        help="Floor, in days, under each branch's starting duration when "
         "--initialise clock is used. It has no effect under the default "
         "tip-date initialisation.")
 
@@ -538,7 +533,8 @@ def main():
     terminal_indices = jnp.asarray(
         [name_to_pos[name] for name in terminal_names], dtype=jnp.int32)
 
-    root_to_tip = np.asarray(path_sum(branch_distances_array)[terminal_indices])
+    root_to_tip = np.asarray(
+        path_sum(branch_distances_array)[terminal_indices])
     genome_size = args.treat_mutation_units_as_normalised_to_genome_size
 
     def estimate_clock(days, root_to_tip):
@@ -624,7 +620,10 @@ def main():
     if args.initialise == 'tip-dates':
         branch_time_init, initial_root_date = (
             input_mod.estimate_initial_times_local(
-                tree, name_to_pos, branch_distances_array, target_dates,
+                tree,
+                name_to_pos,
+                branch_distances_array,
+                target_dates,
                 clock_rate,
                 mutation_floor=args.initial_branch_floor == 'mutations'))
         initial_branch_times_array = jnp.asarray(
@@ -733,8 +732,10 @@ def main():
             # The first chunk is a single step so that step 0 is logged, as it
             # was before.
             length = 1 if step < 0 else min(CHUNK_SIZE, num_steps - step - 1)
-            state, lowest_loss, best_params, losses = run_chunk(
-                state, lowest_loss, best_params, length=length)
+            state, lowest_loss, best_params, losses = run_chunk(state,
+                                                                lowest_loss,
+                                                                best_params,
+                                                                length=length)
             # The only host sync per chunk, against several per step before.
             losses = np.asarray(losses)
             step += length
