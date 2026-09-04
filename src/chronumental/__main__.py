@@ -405,7 +405,14 @@ def main():
             node.edge_length = branch_length_lookup[node_name] / (
                 365 if args.output_unit == "years" else 1)
             if not node.parent:
-                total_lengths[node] = branch_length_lookup[node_name]
+                # The root spans no time: it has no parent for time to elapse
+                # from, and its branch length was zeroed on input so the fit
+                # never used one. Writing a fitted value here would make the
+                # output tree and the output dates disagree, since walking
+                # the tree from the root would accumulate a duration the
+                # dates omit.
+                node.edge_length = 0.0
+                total_lengths[node] = 0.0
             else:
                 total_lengths[node] = branch_length_lookup[
                     node_name] + total_lengths[node.parent]

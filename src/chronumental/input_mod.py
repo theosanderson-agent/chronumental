@@ -110,6 +110,22 @@ def read_tree(tree_file):
         tree = treeswift.read_tree_newick(tree_file)
     #raise ValueError(tree)
 
+    # The root has no parent, so any branch length on it does not represent
+    # elapsed time between two nodes and there is nothing above it to date.
+    # Some tools write one anyway: treetime's divergence trees carry a root
+    # branch, and on one real dataset it was 0.001 substitutions per site,
+    # over a year at that dataset's clock rate. Left in place it was added to
+    # every node's root-to-tip sum and, worse, pushed the reported root date
+    # that far later, which is the single largest disagreement with treetime
+    # on that dataset. Zeroing it moved the median disagreement across
+    # internal nodes from 18.5 days to 12.6 and the root from 183 days out to
+    # 75. It also removes a spurious Poisson term asking the fit to explain
+    # the stem's mutations with a duration nothing else constrains.
+    if tree.root.edge_length:
+        print(f"Ignoring the root's branch length of {tree.root.edge_length}: "
+              f"a root has no parent, so it spans no time.")
+        tree.root.edge_length = 0
+
     for node in tree.traverse_preorder():
         if node.label:
             node.label = node.label.replace("'", "")
